@@ -1,0 +1,13 @@
+FROM ubuntu:18.04
+LABEL maintainer="Shuai Liang <sliang@indocresearch.org>"
+
+RUN sed 's/main$/main universe/' -i /etc/apt/sources.list 
+RUN apt-get update -y
+RUN apt-get install -y python3-pip python3-dev build-essential default-jre-headless 
+RUN pip3 install --upgrade pip
+
+COPY ./ /dcm
+RUN pip install -r /dcm/scripts/requirements.txt
+RUN chmod 555 -R /dcm
+
+WORKDIR /dcm
