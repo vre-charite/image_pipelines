@@ -61,7 +61,8 @@ def main():
     projects = [p.strip() for p in conf.get('projects', 'IDs').split(',')]
     if args['project'] not in projects and not args['anonymize_script']:
         raise ValueError(f"unknown project {args['project']}")
-    t = datetime.datetime.now().strftime('%Y%m%d%H%M%s')
+    t = datetime.datetime.now().strftime('%H%M%S') 
+    t = os.path.basename(args['input_file']).split('.')[0] + t
     ext_dir = args['ext_dir'] = os.path.join(args['workdir'], t+'i')
     out_dir = os.path.join(args['workdir'], t+'o')
 
