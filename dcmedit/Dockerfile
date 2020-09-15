@@ -13,7 +13,7 @@ ENV LANGUAGE en_US:en
 ENV LC_ALL en_US.UTF-8
 
 COPY ./ /dcm
-RUN pip install -r /dcm/scripts/requirements.txt --proxy="http://proxy.charite.de:8080/"
+RUN http_proxy="http://proxy.charite.de:8080/" pip install -r /dcm/scripts/requirements.txt
 RUN chmod 555 -R /dcm
 
 WORKDIR /dcm
