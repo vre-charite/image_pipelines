@@ -3,9 +3,9 @@ LABEL maintainer="Shuai Liang <sliang@indocresearch.org>"
 
 RUN sed 's/main$/main universe/' -i /etc/apt/sources.list
 RUN apt-get update -y
-RUN apt-get install -y python3-pip python3-dev build-essential default-jre-headless --proxy="http://proxy.charite.de:8080/"
-RUN apt-get install locales --proxy="http://proxy.charite.de:8080/"
-RUN pip3 install --upgrade pip --proxy="http://proxy.charite.de:8080/"
+RUN apt-get install -y python3-pip python3-dev build-essential default-jre-headless
+RUN apt-get install locales
+RUN pip3 install --upgrade pip
 
 RUN locale-gen en_US.UTF-8
 ENV LANG en_US.UTF-8
