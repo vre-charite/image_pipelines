@@ -1,0 +1,14 @@
+image: docker:latest
+
+variables:
+  REGISTRY: 10.32.42.225:5000
+  CONTAINER_IMAGE: ${REGISTRY}/dcmedit:v0.1
+
+build:
+  stage: build
+  tags:
+    - VRE-Deployment
+  script:
+    - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
+    - docker build -t ${CONTAINER_IMAGE} dcmedit/.
+    - docker push ${CONTAINER_IMAGE}
