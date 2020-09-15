@@ -71,7 +71,7 @@ def main():
         LOGGER.info(f'extract dir: {ext_dir}')
         os.makedirs(out_dir)
         LOGGER.info(f'work dir: {out_dir}')
-        if args['project'] == 'GENERATE':
+        if args['project'] == 'generate':
             preprocess.generate(args)
         extract(args['input_file'], ext_dir)
         edit = ['java', '-jar', 'dicom-edit6-1.0.8-SNAPSHOT-jar-with-dependencies.jar', '-s',
