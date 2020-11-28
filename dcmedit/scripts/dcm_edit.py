@@ -43,7 +43,7 @@ def parse_inputs():
     if not arguments['log_file']: 
         arguments['log_file'] = os.path.join(arguments['output_dir'], "dcm_edit.log")
     if arguments['use_default_anonymization']:
-        vars['anonymize_script'] = 'dicomedit_scripts/anonymization.des'
+        arguments['anonymize_script'] = 'dicomedit_scripts/anonymization.des'
     return arguments
 
 def extract(fname, outdir):
