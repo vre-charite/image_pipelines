@@ -27,7 +27,7 @@ build-filecopy:
       - filecopy/*
       - filecopy/scripts/*
   script:
-    - docker login ${REGISTRY_DEV} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
+    - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
     - docker build -t ${FILECOPY_CONTAINER_IMAGE} filecopy/.
     - docker push ${FILECOPY_CONTAINER_IMAGE}
 
