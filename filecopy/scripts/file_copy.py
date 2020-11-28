@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 
-#create logger for filecopy pipeline 
+#create logger  
 logger = logging.getLogger(__name__)
 
 def parse_inputs():
