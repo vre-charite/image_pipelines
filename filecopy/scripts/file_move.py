@@ -7,6 +7,7 @@ import shutil
 
 #create logger for filecopy pipeline 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
@@ -18,8 +19,6 @@ def parse_inputs():
     parser.add_argument('-o', '--output-path', help='Sepecify output file', 
         metavar='PATH', required=True)
     parser.add_argument('-t', '--trash-path', help='Trash folder path', 
-        metavar='PATH', required=True)
-    parser.add_argument('-l', '--log-path', help='Name of log file with full path',
         metavar='PATH', required=True)
 
     arguments = vars(parser.parse_args())
@@ -52,14 +51,26 @@ def main():
 
 if __name__ == "__main__":
     args = parse_inputs()
-    logpath = args['log_path'] 
     try:
         formatter = logging.Formatter('%(asctime)s - %(name)s - \
                               %(levelname)s - %(message)s')
-        file_handler = logging.FileHandler(logpath+'/file_copy.log')
+        # File handler                      
+        file_handler = logging.FileHandler('./file_move.log')
         file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG)
+        # Standard Out Handler
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setFormatter(formatter)
+        stdout_handler.setLevel(logging.DEBUG)
+        # Standard Err Handler
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(formatter)
+        stderr_handler.setLevel(logging.ERROR)
+        # register handlers
         logger.addHandler(file_handler)
-        logger.setLevel(logging.DEBUG)
+        logger.addHandler(stdout_handler)
+        logger.addHandler(stderr_handler)
+        
         logger.info("="*82)
         logger.info(" Start moving file...  ".center(82, '='))
         logger.info("="*82)
