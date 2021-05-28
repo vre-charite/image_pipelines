@@ -44,6 +44,8 @@ def main():
             logger.debug(f'starting to copy directory: {input_path}')
         else:
             logger.debug(f'starting to copy file: {input_path}')
+        if os.path.isdir(input_path):
+            input_path += "/"
         subprocess.call(['rsync', '-avz', '--min-size=1', input_path, output_file])
         logger.debug(f'Successfully copied file from {input_path} to {output_file}')
     except Exception as e:
@@ -52,7 +54,9 @@ def main():
 
 if __name__ == "__main__":
     args = parse_inputs()
-    logpath = args['log_path'] 
+    logpath = args['log_path']
+    if not os.path.exists(logpath):
+        os.makedirs(logpath)
     try:
         formatter = logging.Formatter('%(asctime)s - %(name)s - \
                               %(levelname)s - %(message)s')
