@@ -2,7 +2,7 @@ import os
 
 _config = None
 
-def config_singleton(env="test"):
+def config_singleton(env):
     global _config
     if _config:
         return _config
