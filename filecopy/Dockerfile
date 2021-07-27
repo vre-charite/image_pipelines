@@ -4,7 +4,7 @@ USER root
 
 # RUN sed 's/main$/main universe/' -i /etc/apt/sources.list 
 RUN http_proxy="http://proxy.charite.de:8080/" apt-get update -y 
-RUN http_proxy="http://proxy.charite.de:8080/" apt-get update -y && apt-get install -y rsync python3-pip python3-dev build-essential \
+RUN http_proxy="http://proxy.charite.de:8080/" apt-get update -y && http_proxy="http://proxy.charite.de:8080/" apt-get install -y rsync python3-pip python3-dev build-essential \
     default-jre-headless locales
 RUN pip3 install --upgrade pip --proxy=http://proxy.charite.de:8080
 COPY ./ /datacopy
