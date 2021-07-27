@@ -1,13 +1,11 @@
+from config import config_singleton, set_config, config_factory
 import os 
-import subprocess
 import argparse
-import logging
-import sys
-import shutil
-
-#create logger for filecopy pipeline 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+import time
+import requests
+import traceback
+import re
+from minio_client import Minio_Client
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
@@ -20,63 +18,95 @@ def parse_inputs():
         metavar='PATH', required=True)
     parser.add_argument('-t', '--trash-path', help='Trash folder path', 
         metavar='PATH', required=True)
+    parser.add_argument('-env', '--environment',
+                        help='Environment', required=True)
+    parser.add_argument('-p', '--project-code',
+                        help='Project code', required=True)
+    parser.add_argument('-op', '--operator',
+                        help='Action operator', required=True)
 
     arguments = vars(parser.parse_args())
     return arguments
 
+def debug_message_sender(message: str):
+    _config = config_singleton()
+    url = _config.DATA_OPS_UT + "files/actions/message"
+    response = requests.post(url, json={
+        "message": message,
+        "channel": "pipelinewatch"
+    })
+    if response.status_code != 200:
+        print("code: " + str(response.status_code) + ": " + response.text)
+    return
+
+
+def logger_info(message: str):
+    debug_message_sender(message)
+    print(message)
+
+
+def delete_object_single_file(source_bucket, source_object_name: str, version=None):
+    logger_info("[Deleting source] {}::{}".format(source_bucket, source_object_name))
+    try:
+        _config = config_singleton()
+        # get size
+        mc = Minio_Client(_config)
+        logger_info("========Minio_Client Initiated========")
+        # move minio file objects
+        # copy an object from a bucket to another.
+        result = mc.client.remove_object(source_bucket, source_object_name)
+        logger_info("Minio Object Deleted")
+    except Exception as e:
+        logger_info("[Fatal While Minio Copy] " + str(e))
+        raise
+
+def location_decoder(location: str):
+    '''
+    decode resource location
+    return ingestion_type, ingestion_host, ingestion_path
+    '''
+    splits_loaction = location.split("://", 1)
+    ingestion_type = splits_loaction[0]
+    ingestion_url = splits_loaction[1]
+    path_splits =  re.split(r"(?<!/)/(?!/)", ingestion_url, 1)
+    ingestion_host = path_splits[0]
+    ingestion_path = path_splits[1]
+    return ingestion_type, ingestion_host, ingestion_path
 
 def main():
     try:
+        logger_info('environment: ' + str(args.get('environment')))
+        environment = args.get('environment', 'test')
+        set_config(config_factory(environment))
+        logger_info('config set: ' + environment)
+        _config = config_singleton(environment)
+        logger_info('_config environment: ' + str(_config.env))
         output_file = args['output_path']
         output_path = os.path.dirname(output_file)
-        logger.info(f'file path is: {output_path}')
+        logger_info(f'file path is: {output_path}')
         input_path = args['input_path']
         trash_path = args['trash_path']
-        if not os.path.exists(trash_path):
-            os.makedirs(trash_path)
-            logger.info(f'creating trash folder: {trash_path}')
-        if not os.path.exists(output_path):
-            os.makedirs(output_path)
-            logger.info(f'creating output directory: {output_path}')
-            
-        if os.path.isdir(input_path):
-            logger.info(f'starting to move directory: {input_path}')
-        else:
-            logger.info(f'starting to move file: {input_path}')
-        shutil.move(input_path, output_file)
-        logger.info(f'Successfully moved file from {input_path} to {output_file}')
+        ingestion_type, ingestion_host, ingestion_path = location_decoder(
+            input_path)
+        splits_ingestion = ingestion_path.split("/", 1)
+        source_bucket_name = splits_ingestion[0]
+        source_object_name = splits_ingestion[1]
+        delete_object_single_file(source_bucket_name, source_object_name)
+        logger_info(f'Successfully moved file from {input_path} to {output_file}')
     except Exception as e:
-        logger.exception(f'Failed to move file from {input_path} to {output_file}\n {e}')
-
+        logger_info(f'Failed to move file from {input_path} to {output_file}\n {e}')
+        raise
 
 if __name__ == "__main__":
-    args = parse_inputs()
     try:
-        formatter = logging.Formatter('%(asctime)s - %(name)s - \
-                              %(levelname)s - %(message)s')
-        # File handler                      
-        file_handler = logging.FileHandler('./file_move.log')
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(logging.DEBUG)
-        # Standard Out Handler
-        stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setFormatter(formatter)
-        stdout_handler.setLevel(logging.DEBUG)
-        # Standard Err Handler
-        stderr_handler = logging.StreamHandler(sys.stderr)
-        stderr_handler.setFormatter(formatter)
-        stderr_handler.setLevel(logging.ERROR)
-        # register handlers
-        logger.addHandler(file_handler)
-        logger.addHandler(stdout_handler)
-        logger.addHandler(stderr_handler)
-        
-        logger.info("="*82)
-        logger.info(" Start moving file...  ".center(82, '='))
-        logger.info("="*82)
+        args = parse_inputs()
+        logger_info("="*82)
+        logger_info(" Start deleting file...  ".center(82, '='))
+        logger_info("="*82)
+        main()
     except Exception as e:
-        logger.exception(e)
-        sys.exit(-1)  
+        logger_info("[Delete Failed] {}".format(str(e)))
+        for info in traceback.format_stack():
+            logger_info(info)
+        raise
 
-    main()
-    

@@ -1,88 +1,156 @@
-import os 
-import subprocess
+from config import config_singleton, set_config, config_factory
+import os
 import argparse
-import logging
-import sys
+import time
+import requests
+import traceback
+from minio_client import Minio_Client
 
-#create logger for filecopy pipeline 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+
+def main():
+    try:
+        logger_info('environment: ' + str(args.get('environment')))
+        environment = args.get('environment', 'test')
+        set_config(config_factory(environment))
+        logger_info('config set: ' + environment)
+        _config = config_singleton(environment)
+        project_code = args['project_code']
+        output_path = args['output_path']
+        output_bucket = "core-" + project_code
+        input_path = args['input_path']
+        input_bucket = "gr-" + project_code
+        operator = args['operator']
+        job_id = args['job_id']
+        logger_info('project_code: ' + project_code)
+        logger_info('_config environment: ' + str(_config.env))
+        logger_info('output_bucket: ' + output_bucket)
+        logger_info('input_bucket: ' + input_bucket)
+        logger_info('operator: ' + operator)
+        logger_info('job_id: ' + job_id)
+
+        # check if the input path is directory
+        is_directory = False
+        if is_directory:
+            logger_info("Do not support copy as a folder")
+            raise(Exception("[Invalid operation] input is a folder"))
+        else:
+            logger_info(f'starting to copy file: {input_path}')
+
+        # copy minio object
+        result = copy_object_single_file(
+            output_bucket, output_path, input_bucket, input_path)
+        
+        update_job(job_id, 'RUNNING', result)
+
+        logger_info(
+            f'Successfully copied file from {input_path} to {output_path}')
+    except Exception as e:
+        raise
+
+
+def debug_message_sender(message: str):
+    _config = config_singleton()
+    url = _config.DATA_OPS_UT + "files/actions/message"
+    response = requests.post(url, json={
+        "message": message,
+        "channel": "pipelinewatch"
+    })
+    if response.status_code != 200:
+        print("code: " + str(response.status_code) + ": " + response.text)
+    return
+
+
+def logger_info(message: str):
+    debug_message_sender(message)
+    print(message)
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
-        description = __doc__,
-        formatter_class = argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('-i', '--input-path', help='Sepecify input file', 
-        metavar='FILE/Folder', required=True)
-    parser.add_argument('-o', '--output-path', help='Sepecify output file', 
-        metavar='PATH', required=True)
-    parser.add_argument('-l', '--log-path', help='Name of log file with full path',
-        metavar='PATH', required=True)
+    parser.add_argument('-i', '--input-path', help='Sepecify input file',
+                        metavar='Relative path, Object Name', required=True)
+    parser.add_argument('-o', '--output-path', help='Sepecify output file',
+                        metavar='Relative path, Object Name', required=True)
+    parser.add_argument('-env', '--environment',
+                        help='Environment', required=True)
+    parser.add_argument('-p', '--project-code',
+                        help='Project code', required=True)
+    parser.add_argument('-op', '--operator',
+                        help='Action operator', required=True)
+    parser.add_argument('-j', '--job-id',
+                        help='Job geid', required=True)
 
     arguments = vars(parser.parse_args())
     return arguments
 
 
-def main():
+def recursively_get_paths(folder):
+    paths = []
+    for path, subdirs, files in os.walk(folder):
+        for name in files:
+            full_path = os.path.join(path, name)
+            paths.append(full_path)
+    return paths
+
+
+def copy_object_single_file(bucket, object_name: str, source_bucket, source_object_name: str):
+    logger_info("[Copying source] {}::{}".format(source_bucket, source_object_name))
+    logger_info("[Copying destination] {}::{}".format(bucket, object_name))
     try:
-        output_file = args['output_path']
-        output_path = os.path.dirname(output_file)
-        logger.debug(f'file path is: {output_path}')
-        input_path = args['input_path']
-
-        try:
-            if not os.path.exists(output_path):
-                os.makedirs(output_path)
-                logger.debug(f'creating output directory: {output_path}')
-        except FileExistsError as e:
-            logger.info(e)
-            pass 
-
-
-        if os.path.isdir(input_path):
-            logger.debug(f'starting to copy directory: {input_path}')
+        _config = config_singleton()
+        # get size
+        mc = Minio_Client(_config)
+        logger_info("========Minio_Client Initiated========")
+        file_size_gb = 0
+        versioning = None
+        if file_size_gb < 5:
+            logger_info("File size less than 5GiB")
+            # move minio file objects
+            # copy an object from a bucket to another.
+            result = mc.copy_object(
+                bucket, object_name, source_bucket, source_object_name)
+            versioning = result.version_id
         else:
-            logger.debug(f'starting to copy file: {input_path}')
-        if os.path.isdir(input_path):
-            input_path += "/"
-        subprocess.call(['rsync', '-avz', '--min-size=1', input_path, output_file])
-        logger.debug(f'Successfully copied file from {input_path} to {output_file}')
+            logger_info("File size greater than 5GiB")
+            temp_path = _config.TEMP_DIR + str(time.time())
+            file_get = mc.client.fget_object(
+                source_bucket, source_object_name, temp_path)
+            logger_info("File fetched to local disk: {}".format(temp_path))
+            result = mc.fput_object(bucket, object_name, temp_path)
+            versioning = result.version_id
+            logger_info("File uploaded : {}".format(object_name))
+        logger_info("Minio Object Copied")
+        return {
+            "versioning": versioning
+        }
     except Exception as e:
-        logger.exception(f'Failed to copy file from {input_path} to {output_file}\n {e}')
+        logger_info("[Fatal While Minio Copy] " + str(e))
+        raise
 
+def update_job(job_id, status, add_payload={}, progress=0):
+    _config = config_singleton()
+    url = _config.DATA_OPS_UT + "tasks"
+    response = requests.put(url, json={
+        "session_id": "*",
+        "job_id": job_id,
+        "status": status,
+        "add_payload": add_payload,
+        "progress": progress
+    })
+    logger_info(str(response.text))
 
 if __name__ == "__main__":
-    args = parse_inputs()
-    logpath = args['log_path']
-    if not os.path.exists(logpath):
-        os.makedirs(logpath)
     try:
-        formatter = logging.Formatter('%(asctime)s - %(name)s - \
-                              %(levelname)s - %(message)s')
-        # File handler                      
-        file_handler = logging.FileHandler(logpath+'/file_copy.log')
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(logging.DEBUG)
-        # Standard Out Handler
-        stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setFormatter(formatter)
-        stdout_handler.setLevel(logging.DEBUG)
-        # Standard Err Handler
-        stderr_handler = logging.StreamHandler(sys.stderr)
-        stderr_handler.setFormatter(formatter)
-        stderr_handler.setLevel(logging.ERROR)
-        # register handlers
-        logger.addHandler(file_handler)
-        logger.addHandler(stdout_handler)
-        logger.addHandler(stderr_handler)
-        logger.debug("="*82)
-        logger.debug(" Start copy file...  ".center(82, '='))
-        logger.debug("="*82)
+        args = parse_inputs()
+        logger_info("="*82)
+        logger_info(" Start copying file...  ".center(82, '='))
+        logger_info("="*82)
+        main()
     except Exception as e:
-        logger.exception(e)
-        sys.exit(-1)  
-
-    main()
-    
-
+        logger_info("[Copy Failed] {}".format(str(e)))
+        for info in traceback.format_stack():
+            logger_info(info)
+        raise
