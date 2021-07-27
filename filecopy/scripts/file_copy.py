@@ -9,9 +9,9 @@ from minio_client import Minio_Client
 
 def main():
     try:
-        logger_info('environment: ' + str(args.get('environment')))
         environment = args.get('environment', 'test')
         set_config(config_factory(environment))
+        logger_info('environment: ' + str(args.get('environment')))
         logger_info('config set: ' + environment)
         _config = config_singleton(environment)
         project_code = args['project_code']
@@ -145,9 +145,6 @@ def update_job(job_id, status, add_payload={}, progress=0):
 if __name__ == "__main__":
     try:
         args = parse_inputs()
-        logger_info("="*82)
-        logger_info(" Start copying file...  ".center(82, '='))
-        logger_info("="*82)
         main()
     except Exception as e:
         logger_info("[Copy Failed] {}".format(str(e)))

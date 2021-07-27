@@ -75,9 +75,9 @@ def location_decoder(location: str):
 
 def main():
     try:
-        logger_info('environment: ' + str(args.get('environment')))
         environment = args.get('environment', 'test')
         set_config(config_factory(environment))
+        logger_info('environment: ' + str(args.get('environment')))
         logger_info('config set: ' + environment)
         _config = config_singleton(environment)
         logger_info('_config environment: ' + str(_config.env))
@@ -100,9 +100,6 @@ def main():
 if __name__ == "__main__":
     try:
         args = parse_inputs()
-        logger_info("="*82)
-        logger_info(" Start deleting file...  ".center(82, '='))
-        logger_info("="*82)
         main()
     except Exception as e:
         logger_info("[Delete Failed] {}".format(str(e)))
