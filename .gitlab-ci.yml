@@ -4,6 +4,7 @@ variables:
   REGISTRY: 10.32.42.225:5000
   DCMEDIT_CONTAINER_IMAGE: ${REGISTRY}/dcmedit:v0.1
   FILECOPY_CONTAINER_IMAGE: ${REGISTRY}/filecopy:v0.1
+  BIDS_VALIDATOR_CONTAINER_IMAGE: ${REGISTRY}/bids-validator:v0.1
 
 
 build-dcmedit:
@@ -30,4 +31,18 @@ build-filecopy:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
     - docker build -t ${FILECOPY_CONTAINER_IMAGE} filecopy/.
     - docker push ${FILECOPY_CONTAINER_IMAGE}
+
+
+build-bids-validator:
+  stage: build
+  tags:
+    - VRE-Deployment
+  only:
+    changes:
+      - bids-validator/*
+      - bids-validator/scripts/*
+  script:
+    - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
+    - docker build -t ${BIDS_VALIDATOR_CONTAINER_IMAGE} bids-validator/.
+    - docker push ${BIDS_VALIDATOR_CONTAINER_IMAGE}
 

@@ -16,7 +16,7 @@ import subprocess
 import shutil
 import json
 import io
-from minio_client import Minio_Client
+from minio_client import Minio_Client, Minio_Client_
 from config import ConfigClass
 
 from logger import Logger, LoggerException
@@ -43,6 +43,12 @@ def parse_inputs():
     parser.add_argument('-a', '--anonymize-script', help='dicom edit script',
              metavar='FILE', default=None)
     parser.add_argument('-env', '--environment', help='environment', required=True)
+
+    parser.add_argument('-at', '--access-token',
+                        help='access key', required=True)
+    parser.add_argument('-rt', '--refresh-token',
+                        help='refresh key', required=True) 
+
     arguments = vars(parser.parse_args())
     if not arguments['log_file']: 
         arguments['log_file'] = "dcm_edit.log"
@@ -70,19 +76,19 @@ def parse_location(path, env):
     path = '/'.join(path[2:])
     return {"bucket": bucket, "path": path}
 
-def download_file(minio_path, target_folder, env):
+def download_file(minio_path, target_folder, env, auth_token):
     file_data = parse_location(minio_path, env)
-    mc = Minio_Client(env)
+    mc = Minio_Client_(env, auth_token["at"], auth_token["rt"])
     response = mc.client.get_object(file_data["bucket"], file_data["path"])
     target_path = target_folder + "/" + file_data["path"].split("/")[-1]
     with open(target_path, 'wb') as f:
         f.write(response.data)
     return target_path
 
-def upload_file(file_path, target_location, env):
+def upload_file(file_path, target_location, env, auth_token):
     file_data = parse_location(target_location, env)
     filename = os.path.basename(file_data["path"])
-    mc = Minio_Client(env)
+    mc = Minio_Client_(env, auth_token["at"], auth_token["rt"])
     response = mc.client.fput_object(
         file_data["bucket"], 
         file_data["path"], 
@@ -104,12 +110,19 @@ def main(env):
     ext_dir = args['ext_dir'] = os.path.join(args['workdir'], t+'i')
     out_dir = os.path.join(args['workdir'], t+'o')
     output_location = generate_output_location(args["input_file"])
+
+    token = {
+        "at": args['access_token'],
+        "rt": args['refresh_token']
+    }
+    LOGGER.info(token)
+
     try:
         os.makedirs(ext_dir) 
         LOGGER.info(f'extract dir: {ext_dir}')
         os.makedirs(out_dir)
         LOGGER.info(f'work dir: {out_dir}')
-        downloaded_file = download_file(args["input_file"], ext_dir, env)
+        downloaded_file = download_file(args["input_file"], ext_dir, env, token)
         if args['project'] == 'generate':
             preprocess.generate(args)
         extract(downloaded_file, ext_dir)
@@ -123,12 +136,14 @@ def main(env):
         f_out = os.path.join(out_dir, f_out)   
         os.chdir(args['workdir'])
         shutil.make_archive(f_out, 'zip', args['workdir'], t+'o')
-        f_out += '.zip'   
-        upload_file(f_out, output_location, env)
+        f_out += '.zip'  
+         
+        upload_file(f_out, output_location, env, token)
         LOGGER.info(f'output: {f_out}')
     except Exception as err:
         LOGGER.exception(err)
         sys.exit(err)  
+
     LOGGER.info('clear intermediate direcotries.')
     shutil.rmtree(ext_dir)
     shutil.rmtree(out_dir)

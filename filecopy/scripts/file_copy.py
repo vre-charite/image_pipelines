@@ -4,7 +4,7 @@ import argparse
 import time
 import requests
 import traceback
-from minio_client import Minio_Client
+from minio_client import Minio_Client, Minio_Client_
 
 
 def main():
@@ -21,6 +21,13 @@ def main():
         input_bucket = "gr-" + project_code
         operator = args['operator']
         job_id = args['job_id']
+        # add new variable for the minio token
+        token = {
+            "at": args['access_token'],
+            "rt": args['refresh_token']
+        }
+
+        logger_info('all varible: ' + str(args))
         logger_info('project_code: ' + project_code)
         logger_info('_config environment: ' + str(_config.env))
         logger_info('output_bucket: ' + output_bucket)
@@ -38,7 +45,7 @@ def main():
 
         # copy minio object
         result = copy_object_single_file(
-            output_bucket, output_path, input_bucket, input_path)
+            output_bucket, output_path, input_bucket, input_path, token)
         
         update_job(job_id, 'RUNNING', result)
 
@@ -83,6 +90,11 @@ def parse_inputs():
     parser.add_argument('-j', '--job-id',
                         help='Job geid', required=True)
 
+    parser.add_argument('-at', '--access-token',
+                        help='access key', required=True)
+    parser.add_argument('-rt', '--refresh-token',
+                        help='refresh key', required=True)
+
     arguments = vars(parser.parse_args())
     return arguments
 
@@ -96,13 +108,14 @@ def recursively_get_paths(folder):
     return paths
 
 
-def copy_object_single_file(bucket, object_name: str, source_bucket, source_object_name: str):
+def copy_object_single_file(bucket, object_name: str, source_bucket, source_object_name: str,
+    auth_token: dict):
     logger_info("[Copying source] {}::{}".format(source_bucket, source_object_name))
     logger_info("[Copying destination] {}::{}".format(bucket, object_name))
     try:
         _config = config_singleton()
         # get size
-        mc = Minio_Client(_config)
+        mc = Minio_Client_(_config, auth_token["at"], auth_token["rt"])
         logger_info("========Minio_Client Initiated========")
         file_size_gb = 0
         versioning = None

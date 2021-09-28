@@ -1,15 +1,12 @@
 import requests
 import xmltodict
+from minio import Minio
+from minio.commonconfig import Tags
 import os
 import time
 import datetime
-import jwt
-
-from minio import Minio
-from minio.commonconfig import Tags
 from minio.credentials.providers import ClientGrantsProvider
 from minio.commonconfig import REPLACE, CopySource
-
 
 
 class Minio_Client_():
@@ -36,20 +33,11 @@ class Minio_Client_():
         payload = {
             "grant_type" : "refresh_token",
             "refresh_token": self.refresh_token,
+            "client_id":self._config.MINIO_OPENID_CLIENT,
         }
         headers = {
             "Content-Type": "application/x-www-form-urlencoded"
         }
-
-        # some note here since the upload api will be used by the vre cli
-        # the keycloak clients are kind of different. the portal use `react-app`
-        # the cli use the `kong` so we need to use the `azp` attribute in token
-        # then we can refresh token to update the at
-        at = self.access_token.replace("Bearer ", "") # remove the bearer key for decoding
-        decode_at = jwt.decode(at, verify=False)
-        payload.update({"client_id": decode_at.get("azp")})
-        if decode_at.get("azp") == "kong":
-            payload.update({"client_secret": self._config.KEYCLOAK_VRE_SECRET})
 
         # use http request to fetch from keycloak
         result = requests.post(self._config.KEYCLOAK_URL+"/vre/auth/realms/vre/protocol/openid-connect/token", data=payload, headers=headers)

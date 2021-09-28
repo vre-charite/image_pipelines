@@ -5,7 +5,7 @@ import time
 import requests
 import traceback
 import re
-from minio_client import Minio_Client
+from minio_client import Minio_Client, Minio_Client_
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
@@ -24,6 +24,11 @@ def parse_inputs():
                         help='Project code', required=True)
     parser.add_argument('-op', '--operator',
                         help='Action operator', required=True)
+
+    parser.add_argument('-at', '--access-token',
+                        help='access key', required=True)
+    parser.add_argument('-rt', '--refresh-token',
+                        help='refresh key', required=True)
 
     arguments = vars(parser.parse_args())
     return arguments
@@ -45,12 +50,12 @@ def logger_info(message: str):
     print(message)
 
 
-def delete_object_single_file(source_bucket, source_object_name: str, version=None):
+def delete_object_single_file(source_bucket, source_object_name: str, auth_token:dict, version=None):
     logger_info("[Deleting source] {}::{}".format(source_bucket, source_object_name))
     try:
         _config = config_singleton()
         # get size
-        mc = Minio_Client(_config)
+        mc = Minio_Client_(_config, auth_token["at"], auth_token["rt"])
         logger_info("========Minio_Client Initiated========")
         # move minio file objects
         # copy an object from a bucket to another.
@@ -86,12 +91,18 @@ def main():
         logger_info(f'file path is: {output_path}')
         input_path = args['input_path']
         trash_path = args['trash_path']
+        # add new variable for the minio token
+        token = {
+            "at": args['access_token'],
+            "rt": args['refresh_token']
+        }
+        
         ingestion_type, ingestion_host, ingestion_path = location_decoder(
             input_path)
         splits_ingestion = ingestion_path.split("/", 1)
         source_bucket_name = splits_ingestion[0]
         source_object_name = splits_ingestion[1]
-        delete_object_single_file(source_bucket_name, source_object_name)
+        delete_object_single_file(source_bucket_name, source_object_name, token)
         logger_info(f'Successfully moved file from {input_path} to {output_file}')
     except Exception as e:
         logger_info(f'Failed to move file from {input_path} to {output_file}\n {e}')
