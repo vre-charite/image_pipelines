@@ -134,5 +134,5 @@ class ConfigProd():
 
     POSTGREL_DB = "INDOC_VRE"
     POSTGREL_HOST = "opsdb.utility"
-    POSTGREL_USER = "postgres"
-    POSTGREL_PWD = "postgres"
+    POSTGREL_USER = "indoc_vre"
+    POSTGREL_PWD = "opsdb-jrjmfa9svvC"
