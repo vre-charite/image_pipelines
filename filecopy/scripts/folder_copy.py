@@ -146,8 +146,10 @@ def copy_execute(job_id, new_name, dest_geid, input_geid, project_code, operator
                 source_folder_node['global_entity_id'], "output")
     uploader = source_folder_node.get("uploader", "admin")
     flattened_sources = []
+
+    # here will ONLY unarchived file
     nodes_child_files = [
-                node for node in nodes_child if "File" in node["labels"]]
+                node for node in nodes_child if "File" in node["labels"] and node.get("archived")==False]
     zone = 'vrecore'
     process_pipeline="data_transfer_folder"
     # generate meta information
