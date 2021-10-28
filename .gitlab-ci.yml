@@ -16,7 +16,7 @@ build-dcmedit:
       - dcmedit/*
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build -t ${DCMEDIT_CONTAINER_IMAGE} dcmedit/.
+    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${DCMEDIT_CONTAINER_IMAGE} dcmedit/.
     - docker push ${DCMEDIT_CONTAINER_IMAGE}
 
 build-filecopy:
@@ -43,5 +43,5 @@ build-bids-validator:
       - bids-validator/scripts/*
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build -t ${BIDS_VALIDATOR_CONTAINER_IMAGE} bids-validator/.
+    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${BIDS_VALIDATOR_CONTAINER_IMAGE} bids-validator/.
     - docker push ${BIDS_VALIDATOR_CONTAINER_IMAGE}
