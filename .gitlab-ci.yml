@@ -29,7 +29,7 @@ build-filecopy:
       - filecopy/scripts/*
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build -t ${FILECOPY_CONTAINER_IMAGE} filecopy/.
+    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${FILECOPY_CONTAINER_IMAGE} filecopy/.
     - docker push ${FILECOPY_CONTAINER_IMAGE}
 
 
@@ -45,4 +45,3 @@ build-bids-validator:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
     - docker build -t ${BIDS_VALIDATOR_CONTAINER_IMAGE} bids-validator/.
     - docker push ${BIDS_VALIDATOR_CONTAINER_IMAGE}
-
