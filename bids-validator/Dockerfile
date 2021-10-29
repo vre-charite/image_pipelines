@@ -10,7 +10,7 @@ RUN npm install -g bids-validator@1.8.0
 COPY ./ /dataset-validate
 WORKDIR /dataset-validate
 RUN chmod 555 -R /dataset-validate
-RUN pip3 install --no-cache-dir -r requirements.txt --user
+RUN pip install --no-cache-dir -r requirements.txt --user
 RUN locale-gen en_US.UTF-8
 ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en
