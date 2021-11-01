@@ -4,80 +4,344 @@ import argparse
 import time
 import requests
 import traceback
-import datetime
+# import datetime
+
+from utils import update_job, get_job, get_session_id
 from minio_client import Minio_Client, Minio_Client_
-from utils import get_resource_bygeid, get_connected_nodes, location_decoder, http_query_node, \
-    store_file_meta_data_v2, http_update_node, create_lineage_v3, \
-    add_copied_with_approval, update_file_operation_status_v2, update_file_operation_logs, \
-    get_resource_type, lock_resource, unlock_resource
-from folder import FolderMgr
+
+from utils import get_resource_by_geid, http_query_node, http_update_node,\
+    lock_resource, unlock_resource, debug_message_sender, logger_info
+from utils import deprecate_index_in_es, create_lineage_v3, update_file_operation_logs, \
+    create_es_search_index, create_catalog_entity
+
+
+from neo4j_helper import get_node_by_geid, get_parent_node, \
+    get_children_nodes, delete_relation_bw_nodes, delete_node, create_file_node, \
+    create_folder_node
+
+# from folder import FolderMgr
 from copy import deepcopy
 
 ConfigClass = None
 
-def main():
-    global ConfigClass
-    try:
-        environment = args.get('environment', 'test')
-        set_config(config_factory(environment))
-        logger_info('environment: ' + str(args.get('environment')))
-        logger_info('config set: ' + environment)
-        _config = config_singleton(environment)
-        ConfigClass = _config
-        project_code = args['project_code']
-        output_geid = args['output']
-        input_geid = args['input']
-        operator = args['operator']
-        job_id = args['job_id']
-        rename = args['rename']
-        session_id = get_session_id(job_id)
-        # add new variable for the minio token
-        token = {
-            "at": args['access_token'],
-            "rt": args['refresh_token']
-        }
+PROCESS_PIPELINE = "data_transfer_folder"
+PIPELINE_DESC = '''
+    the script will copy the folder from greenroom to core recursively
+'''
 
-        logger_info('all varible: ' + str(args))
-        logger_info('project_code: ' + project_code)
-        logger_info('_config environment: ' + str(_config.env))
-        logger_info('output_geid: ' + output_geid)
-        logger_info('input_geid: ' + input_geid)
-        logger_info('operator: ' + operator)
-        logger_info('job_id: ' + job_id)
-        logger_info('rename: ' + rename)
+#####################################################################################
 
-        # do copy
-        result = copy_execute(
-            job_id, rename,
-            output_geid, input_geid,
-            project_code, operator,
-            token,
-        )
+class CopyObjects():
+    def __init__(self, minio_client, project, oper):
+        self.mc = minio_client
+        self.project = project
+        self.oper = oper
+
+    def recursive_copy(self, currenct_nodes, current_root_path, parent_node, new_name=None):
+        # copy the files under the project neo4j node to dataset node
+        for ff_object in currenct_nodes:
+            print(ff_object)
+            ff_geid = ff_object.get("global_entity_id")
+            # update here if the folder/file is archieved then skip
+            if ff_object.get("archived", False):
+                continue
+            
+            ################################################################################################
+
+            # recursive logic below
+            if 'File' in ff_object.get("labels"):
+                # TODO simplify here
+                minio_path = ff_object.get('location').split("//")[-1]
+                _, bucket, old_path = tuple(minio_path.split("/", 2))
+
+                # # lock the resource
+                lockkey_template = "{}/{}"
+                old_lockkey = "{}/{}".format(bucket, old_path)
+                new_lockkey = lockkey_template.format(
+                    current_root_path, new_name if new_name else ff_object.get("name"))
+                
+                # try to aquire the lock for old path and lock the new resources
+                lock_resource(old_lockkey)
+                lock_resource(new_lockkey)
+                
+                # file will need extra step to get all attribute
+                # the format of attribute is {"attr_<field>": "value"}
+                attr = {x:ff_object[x] for x in ff_object if "attr" in x}
+                tags = ff_object.get("tags")
+                extra = {"system_tags": ["copied-to-core"]}
+                print(extra)
+                # create the copied node
+                # TODO add the guid to the new node
+                new_node, _ = create_file_node(self.project.get("code"), ff_object, self.oper, parent_node.get('id'), \
+                    current_root_path, self.mc, tags=tags, attribute=attr, new_name=new_name, extra_fields=extra) 
+
+                ################################## Metadata Generating ###################################
+                source_geid = ff_object.get("global_entity_id")
+                target_geid = new_node.get("global_entity_id")
+                project_code = self.project.get("code")
+                # also transfer the saved preview info to copied one
+                copy_zippreview(source_geid, target_geid)
+
+                # create the new node in atlas for lineage linking
+                guid = create_catalog_entity(new_node, self.oper)
+
+                # create the lineage link between greenroom -> relation -> core
+                create_lineage_v3(source_geid, target_geid, project_code, PROCESS_PIPELINE,
+                    PIPELINE_DESC)
+
+                # create the elastic search index for advance search
+                create_es_search_index(new_node, ff_object, "File", 
+                    self.project["id"], "vrecore", PROCESS_PIPELINE, guid)
+
+                # # create the file stream/operational logs index in elastic search
+                # print("====== create activity log")
+                res_update_audit_logs = update_file_operation_logs(
+                    ff_object.get('uploader'), self.oper,
+                    os.path.join('Greenroom', ff_object.get("display_path", "")),
+                    os.path.join('VRECore', new_node.get("display_path", "")),
+                    ff_object.get('file_size', 0),
+                    project_code,
+                    ff_object.get("generate_id", "undefined")
+                )
+                logger_info('res_update_audit_logs: ' +
+                    str(res_update_audit_logs.status_code))
+
+                unlock_resource(old_lockkey)
+                unlock_resource(new_lockkey)
+
+            # else it is folder will trigger the recursive
+            elif 'Folder' in ff_object.get("labels"):
+                
+                # first create the folder
+                tags = ff_object.get("tags")
+                extra = {"system_tags": ["copied-to-core"]}
+                new_node, _ = create_folder_node(self.project.get("code"), ff_object, self.oper, \
+                    parent_node, current_root_path, tags=tags, new_name=new_name, extra_fields=extra)
+
+                print(new_node)
+                
+                # metadata creation
+                create_es_search_index(new_node, ff_object, "Folder", 
+                    self.project["id"], "vrecore", PROCESS_PIPELINE, "")
+
+                # seconds recursively go throught the folder/subfolder by same proccess
+                # also if we want the folder to be renamed if new_name is not None
+                next_root = current_root_path+"/"+(new_name if new_name else ff_object.get("name"))
+                children_nodes = get_children_nodes(ff_geid)
+                self.recursive_copy(children_nodes, next_root, new_node)
+
+        return 
+
+
+#####################################################################################
+
+def recursive_copy(currenct_nodes, dataset, oper, current_root_path, \
+    parent_node, minio_client:Minio_Client_, job_tracker=None, new_name=None):
+
+    num_of_files = 0
+    total_file_size = 0
+    # this variable DOESNOT contain the child nodes
+    new_lv1_nodes = []
+
+    # copy the files under the project neo4j node to dataset node
+    for ff_object in currenct_nodes:
+        ff_geid = ff_object.get("global_entity_id")
+        # new_node = None
+
+        # update here if the folder/file is archieved then skip
+        if ff_object.get("archived", False):
+            continue
         
-        update_job(session_id, job_id, 'SUCCEED')
+        ################################################################################################
+        print(ff_object)
 
-        logger_info(
-            f'Successfully copied folder from {input_geid} to {output_geid}')
-    except Exception as e:
-        raise
+        # recursive logic below
+        if 'File' in ff_object.get("labels"):
+            # TODO simplify here
+            minio_path = ff_object.get('location').split("//")[-1]
+            _, bucket, old_path = tuple(minio_path.split("/", 2))
+
+            # # lock the resource
+            lockkey_template = "{}/{}"
+            old_lockkey = "{}/{}".format(bucket, old_path)
+            new_lockkey = "{}/{}/{}".format('core-'+dataset.get("code"), current_root_path,
+                new_name if new_name else ff_object.get("name"))
+            
+            # # try to aquire the lock for old path and lock the new resources
+            lock_resource(old_lockkey)
+            lock_resource(new_lockkey)
+            
+            # file will need extra step to get all attribute
+            # the format of attribute is {"attr_<field>": "value"}
+            attr = {x:ff_object[x] for x in ff_object if "attr" in x}
+            tags = ff_object.get("tags")
+            # create the copied node
+            # TODO add the guid to the new node
+            new_node, _ = create_file_node(dataset.get("code"), ff_object, oper, parent_node.get('id'), \
+                current_root_path, minio_client, tags=tags, attribute=attr, new_name=new_name) 
+
+            # add system_tags for old nodes
+            update_json = {"system_tags": ["copied-to-core"]}
+            http_update_node("File", ff_object.get("id"), update_json)
+
+            ################################## Metadata Generating ###################################
+            source_geid = ff_object.get("global_entity_id")
+            target_geid = new_node.get("global_entity_id")
+            project_code = dataset.get("code")
+            # unix_process_time = datetime.datetime.utcnow().timestamp()
+            # also transfer the saved preview info to copied one
+            copy_zippreview(source_geid, target_geid)
+
+            # create the new node in atlas for lineage linking
+            # print("====== create entity in atlas")
+            guid = create_catalog_entity(new_node, oper)
+
+            # create the lineage link between greenroom -> relation -> core
+            # print("====== create lineage in atlas")
+            create_lineage_v3(source_geid, target_geid, project_code, PROCESS_PIPELINE,
+                PIPELINE_DESC)
+
+            # create the elastic search index for advance search
+            # print("====== create search index in ES")
+            # new_node.update({"project_id": dataset["id"]})
+            # new_node.update({"full_path": new_node.get("location")})
+            # new_node.update({"generate_id": ff_object.get("generate_id", None)})
+            # new_node.update({"guid": guid})
+            # new_node.update({"zone":"vrecore"})
+            # new_node.update({"atlas_guid": new_node.get("guid")})
+            # new_node.update({"process_pipeline": PROCESS_PIPELINE})
+            create_es_search_index(new_node, ff_object, "File", 
+                dataset["id"], "vrecore", PROCESS_PIPELINE, guid)
+
+            # # create the file stream/operational logs index in elastic search
+            # print("====== create activity log")
+            res_update_audit_logs = update_file_operation_logs(
+                ff_object.get('uploader'), oper,
+                os.path.join('Greenroom', ff_object.get("display_path", "")),
+                os.path.join('VRECore', new_node.get("display_path", "")),
+                ff_object.get('file_size', 0),
+                project_code,
+                ff_object.get("generate_id", "undefined")
+            )
+            logger_info('res_update_audit_logs: ' +
+                str(res_update_audit_logs.status_code))
+
+            unlock_resource(old_lockkey)
+            unlock_resource(new_lockkey)
+
+        # else it is folder will trigger the recursive
+        elif 'Folder' in ff_object.get("labels"):
+            
+            # lock the resource
+            lockkey_template = "{}/{}"
+            old_lockkey = lockkey_template.format('gr-'+dataset.get("code"), ff_object.get("display_path"))
+            new_lockkey = "{}/{}/{}".format('core-'+dataset.get("code"), current_root_path,
+                new_name if new_name else ff_object.get("name"))
+            
+            # # try to aquire the lock for old path and lock the new resources
+            lock_resource(old_lockkey)
+            lock_resource(new_lockkey)
+
+            # first create the folder
+            tags = ff_object.get("tags")
+            new_node, _ = create_folder_node(dataset.get("code"), ff_object, oper, \
+                parent_node, current_root_path, tags, new_name)
+            
+            # metadata creation
+            # new_node.update({
+            #     "data_type": "Folder",
+            #     "archived": False,
+            #     "location": "",
+            #     "process_pipeline": PROCESS_PIPELINE,
+            #     "file_name": new_node.get("name"),
+            #     "atlas_guid": "",
+            #     "generate_id": None,
+            #     "zone":"vrecore",
+            #     "operator": oper,
+            #     "uploader": oper,
+            #     "file_size": 0
+            # })
+            create_es_search_index(new_node, ff_object, "Folder", 
+                dataset["id"], "vrecore", PROCESS_PIPELINE, "")
+
+            # seconds recursively go throught the folder/subfolder by same proccess
+            # also if we want the folder to be renamed if new_name is not None
+            next_root = current_root_path+"/"+(new_name if new_name else ff_object.get("name"))
+            children_nodes = get_children_nodes(ff_geid)
+            num_of_child_files, num_of_child_size, _ = \
+                recursive_copy(children_nodes, dataset, oper, next_root, new_node, \
+                    minio_client)
+
+            update_json = {"system_tags": ["copied-to-core"]}
+            http_update_node("Folder", ff_object.get("id"), update_json)
+
+            unlock_resource(old_lockkey)
+            unlock_resource(new_lockkey)
 
 
-def debug_message_sender(message: str):
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + "files/actions/message"
-    response = requests.post(url, json={
-        "message": message,
-        "channel": "pipelinewatch"
-    })
-    if response.status_code != 200:
-        print("code: " + str(response.status_code) + ": " + response.text)
-    return
+    return num_of_files, total_file_size, new_lv1_nodes
 
 
-def logger_info(message: str):
-    debug_message_sender(message)
-    print(message)
+def copy_execute(job_id, new_name, dest_geid, input_geid, project_code, operator, auth_token: dict):
+    source_folder_node = get_resource_by_geid(input_geid)
+    print(source_folder_node)
+    dest_node = get_resource_by_geid(dest_geid)
+    print(dest_node)
 
+    # get project
+    project_response = http_query_node('Container', {"code": project_code})
+    project_info = project_response.json()[0]
+    uploader = source_folder_node.get("uploader", "admin")
+
+    print(" - target node:", dest_node)
+    print()
+    print(" - project node:", project_info)
+    print("======")
+
+    # lock the destination if it is NOT name folder
+    if dest_node.get("name") != dest_node.get("uploader"):
+        lockkey_template = "{}/{}"
+        new_lockkey = lockkey_template.format('core-'+project_info.get("code"), dest_node.get("display_path"))
+        lock_resource(new_lockkey)
+
+    # initialize the minio outside to keep one instance of credential
+    # if dont do so, the large folder will cause the initial token expire
+    mc = Minio_Client_(ConfigClass, auth_token["at"], auth_token["rt"])
+
+    # copy_object = CopyObjects(mc, project_info, operator)
+    # copy_object.recursive_copy([source_folder_node], dest_node.get("display_path"), \
+    #     dest_node, new_name=new_name)
+
+    recursive_copy([source_folder_node], project_info, operator, dest_node.get("display_path"), \
+        dest_node, mc, new_name=new_name)
+
+    # lock the destination if it is NOT name folder
+    if dest_node.get("name") != dest_node.get("uploader"):
+        unlock_resource(new_lockkey)
+
+
+def copy_zippreview(old_geid, new_geid):
+    url = ConfigClass.DATA_OPS_GR + "archive"
+    get_params = {
+        "file_geid": old_geid
+    }
+    response_get = requests.get(url=url, params=get_params)
+    if response_get.status_code == 404:
+        return
+    if response_get.status_code != 200:
+        raise Exception(response_get.text)
+    json_response_get = response_get.json()
+    archive_preview = json_response_get['result']
+    post_url = ConfigClass.DATA_OPS_GR + "archive"
+    post_json = {
+        "file_geid": new_geid,
+        "archive_preview": archive_preview
+    }
+    post_response = requests.post(url=post_url, json=post_json)
+    if post_response.status_code != 200:
+        raise Exception(post_response.text)
+
+#################################################### Main ##############################################
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
@@ -108,299 +372,57 @@ def parse_inputs():
     return arguments
 
 
-def recursively_get_paths(folder):
-    paths = []
-    for path, subdirs, files in os.walk(folder):
-        for name in files:
-            full_path = os.path.join(path, name)
-            paths.append(full_path)
-    return paths
 
-def get_job(job_id):
-    url = ConfigClass.DATA_OPS_UT + "tasks"
-    task_response = requests.get(
-        url,
-        params={
-            "session_id": "*",
-            "job_id": job_id
-        }
-    )
-    logger_info(url)
-    logger_info(job_id)
-    logger_info(task_response.text)
-    my_task = task_response.json()['result'][0]
-    return my_task
-
-def get_session_id(job_id):
-    job = get_job(job_id)
-    return job["session_id"]
-
-def copy_execute(job_id, new_name, dest_geid, input_geid, project_code, operator, auth_token: dict):
-    source_folder_node = get_resource_bygeid(input_geid)
-    dest_node = get_resource_bygeid(dest_geid)
-    dest_node["resource_type"] = get_resource_type(dest_node["labels"])
-    # get project
-    project_response = http_query_node('Container', {"code": project_code})
-    project_info = project_response.json()[0]
-    nodes_child = get_connected_nodes(
-                source_folder_node['global_entity_id'], "output")
-    uploader = source_folder_node.get("uploader", "admin")
-    flattened_sources = []
-
-    # here will ONLY unarchived file
-    nodes_child_files = [
-                node for node in nodes_child if "File" in node["labels"] and node.get("archived")==False]
-    zone = 'vrecore'
-    process_pipeline="data_transfer_folder"
-    # generate meta information
-    unix_process_time = datetime.datetime.utcnow().timestamp()
-    # flatten resources
-    minio_cli = Minio_Client_(ConfigClass, auth_token["at"], auth_token["rt"])
-    for node in nodes_child_files:
-        node['before_update'] = deepcopy(node)
-        node['parent_folder'] = source_folder_node
-        input_nodes = get_connected_nodes(
-            node["global_entity_id"], "input")
-        input_nodes = [
-            node for node in input_nodes if 'Folder' in node['labels']]
-        input_nodes.sort(key=lambda f: f['folder_level'])
-        found_source_node = [
-            node for node in input_nodes if node['global_entity_id'] == source_folder_node['global_entity_id']][0]
-        path_relative_to_source_path = ''
-        source_index = input_nodes.index(found_source_node)
-        folder_name_list = [node['name']
-                            for node in input_nodes[source_index + 1:]]
-        path_relative_to_source_path = os.sep.join(folder_name_list)
-        node['path_relative_to_source_path'] = path_relative_to_source_path
-        node['ouput_relative_path'] = os.path.join(
-            new_name, path_relative_to_source_path)
-    flattened_sources += nodes_child_files
-    logger_info('Resouce flattened: ' + str(len(nodes_child_files)))
-    # copy resources
-    for source in flattened_sources:
-        source['resource_type'] = get_resource_type(source['labels'])
-        location = source['location']
-        ingestion_type, ingestion_host, ingestion_path = location_decoder(
-            location)
-        source['ingestion_type'] = ingestion_type
-        source['ingestion_host'] = ingestion_host
-        source['ingestion_path'] = ingestion_path
-        ouput_relative_path = source.get('ouput_relative_path', '')
-        input_path, output_path = get_output_payload(
-            source, dest_node, ouput_relative_path=ouput_relative_path)
-        source['input_path'] = input_path
-        source['output_path'] = output_path
-        output_bucket = "core-" + project_code
-        input_bucket = "gr-" + project_code
-        # do single file copy# copy minio object
-        lock_resource(os.path.join(output_bucket, output_path))
-        lock_resource(os.path.join(input_bucket, input_path))
-        result = copy_object_single_file(
-            output_bucket, output_path, input_bucket, input_path, minio_cli)
-        # get task payloads
-        versioning = result["versioning"]
-        url = ConfigClass.DATA_OPS_UT + "tasks"
-        task_response = requests.get(
-            url,
-            params={
-                "session_id": "*",
-                "job_id": job_id
-            }
-        )
-        my_task = task_response.json()['result'][0]
-        session_id = my_task['session_id']
-        # Saving folder metadata
-        created_folders_cache = []
-        folder_mgr = FolderMgr(
-                    created_folders_cache,
-                    project_info["global_entity_id"],
-                    project_code,
-                    os.path.dirname(output_path),
-                    [],
-                    zone)
-        folder_mgr.create(uploader)
-        last_folder_node = folder_mgr.last_node
-        # Saving file metadata
-        # v2 API
-        from_parents = {
-            "global_entity_id": source['global_entity_id'],
-            "original_geid": source['global_entity_id']
-        }
-        output_dir_path = os.path.dirname(output_path)
-        file_node_stored = store_file_meta_data_v2(
-            uploader,
-            source["name"],
-            output_dir_path,
-            source.get('file_size', 0),
-            'processed by data_transfer',
-            zone,
-            project_code,
-            [tag for tag in source.get('tags', []) if tag != ConfigClass.copied_with_approval],
-            source.get("generate_id", "undefined"),
-            operator,
-            from_parents=from_parents,
-            process_pipeline=process_pipeline,
-            parent_folder_geid=last_folder_node.global_entity_id,
-            original_geid=source['global_entity_id'],
-            bucket=output_bucket,
-            object_path=output_path,
-            version_id=versioning)
-        copy_zippreview(
-            source['global_entity_id'],
-            file_node_stored['global_entity_id'])
-        # update extra attibutes
-        update_json = {}
-        before_update = source['before_update']
-        for k, v in before_update.items():
-            if not k in file_node_stored:
-                update_json[k] = v
-        updated_file_node_stored = http_update_node(
-            "File", file_node_stored['id'], update_json=update_json)
-        logger_info("file_node_stored: " + str(file_node_stored['id']))
-        logger_info("update_json:    " + str(update_json))
-        logger_info("updated_file_node_stored:  " + updated_file_node_stored.text)
-        # res = updated_file_node_stored.json()[0]
-        # refresh_node(file_node_stored, res)
-        logger_info('Saved meta v2')
-        # create lineage
-        create_lineage_v3(
-            source['global_entity_id'],
-            file_node_stored['global_entity_id'],
-            project_code,
-            process_pipeline,
-            'data_transfer Processed',
-            unix_process_time)
-        logger_info('Created Lineage v3')
-        res_update_audit_logs = update_file_operation_logs(
-            uploader,
-            operator,
-            os.path.join('Greenroom', project_code, input_path),
-            os.path.join('VRECore', project_code, output_path),
-            source.get('file_size', 0),
-            project_code,
-            source.get("generate_id", "undefined")
-        )
-        logger_info('res_update_audit_logs: ' +
-            str(res_update_audit_logs.status_code))
-        unlock_resource(os.path.join(output_bucket, output_path))
-        unlock_resource(os.path.join(input_bucket, input_path))
-    logger_info("Loop done")
-    res_source_folder_add_copied_with_approval, add_copied_with_approval_url, add_copied_with_approval_payload = \
-        add_copied_with_approval(
-            'Folder', source_folder_node['global_entity_id'], True)
-    logger_info(res_source_folder_add_copied_with_approval.text)
-    logger_info(add_copied_with_approval_url)
-    logger_info(str(add_copied_with_approval_payload))
-    logger_info("res_source_folder_add_copied_with_approval finished")
-
-
-
-def copy_object_single_file(bucket, object_name: str, source_bucket, source_object_name: str,
-    minio_cli: Minio_Client_):
-    logger_info("[Copying source] {}::{}".format(source_bucket, source_object_name))
-    logger_info("[Copying destination] {}::{}".format(bucket, object_name))
+def main():
+    global ConfigClass
     try:
-        _config = config_singleton()
-        # get size
-        mc = minio_cli
-        logger_info("========Minio_Client Initiated========")
-        file_size_gb = mc.client.stat_object(source_bucket, source_object_name).size
-        versioning = None
-        if file_size_gb < 5e+9:
-            logger_info("File size less than 5GiB")
-            # move minio file objects
-            # copy an object from a bucket to another.
-            result = mc.copy_object(
-                bucket, object_name, source_bucket, source_object_name)
-            versioning = result.version_id
-        else:
-            logger_info("File size greater than 5GiB")
-            temp_path = _config.TEMP_DIR + str(time.time())
-            file_get = mc.client.fget_object(
-                source_bucket, source_object_name, temp_path)
-            logger_info("File fetched to local disk: {}".format(temp_path))
-            result = mc.fput_object(bucket, object_name, temp_path)
-            versioning = result.version_id
-            logger_info("File uploaded : {}".format(object_name))
-        logger_info("Minio Object Copied")
-        return {
-            "versioning": versioning
+        environment = args.get('environment', 'test')
+        set_config(config_factory(environment))
+        logger_info('environment: ' + str(args.get('environment')))
+        logger_info('config set: ' + environment)
+        _config = config_singleton(environment)
+        ConfigClass = _config
+        project_code = args['project_code']
+        output_geid = args['output']
+        input_geid = args['input']
+        operator = args['operator']
+        job_id = args['job_id']
+        rename = args['rename']
+        session_id = get_session_id(job_id)
+        # add new variable for the minio token
+        token = {
+            "at": args['access_token'],
+            "rt": args['refresh_token']
         }
+
+        # logger_info('all varible: ' + str(args))
+        logger_info('project_code: ' + project_code)
+        logger_info('_config environment: ' + str(_config.env))
+        logger_info('output_geid: ' + output_geid)
+        logger_info('input_geid: ' + input_geid)
+        logger_info('operator: ' + operator)
+        logger_info('job_id: ' + job_id)
+        logger_info('rename: ' + rename)
+
+        logger_info('====== Start Copy')
+
+        # do copy
+        result = copy_execute(
+            job_id, rename,
+            output_geid, input_geid,
+            project_code, operator,
+            token,
+        )
+        
+        update_job(session_id, job_id, 'SUCCEED')
+
+        logger_info(
+            f'Successfully copied folder from {input_geid} to {output_geid}')
     except Exception as e:
-        logger_info("[Fatal While Minio Copy] " + str(e))
-        raise
+        print("ERROR:", str(e))
+        update_job(session_id, job_id, 'TERMINATED')
+        raise e
 
-def update_job(session_id, job_id, status, add_payload={}, progress=0):
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + "tasks"
-    response = requests.put(url, json={
-        "session_id": session_id,
-        "job_id": job_id,
-        "status": status,
-        "add_payload": add_payload,
-        "progress": progress
-    })
-    logger_info(str(response.text))
-
-def get_zone(labels: list):
-    '''
-    Get resource type by neo4j labels
-    '''
-    zones = ['Greenroom', 'VRECore']
-    for label in labels:
-        if label in zones:
-            return label
-    return None
-
-def get_output_payload(file_node, destination=None, ouput_relative_path=''):
-    '''
-    return inputpath, outputpath
-    '''
-    location = file_node['location']
-    splits_loaction = location.split("://")
-    ingestion_type = file_node['ingestion_type']
-    ingestion_host = file_node['ingestion_host']
-    ingestion_path = file_node['ingestion_path']
-    if ingestion_type == "minio":
-        splits_ingestion = ingestion_path.split("/", 1)
-        source_bucket_name = splits_ingestion[0]
-        source_object_name = splits_ingestion[1]
-        path, source_name = os.path.split(source_object_name)
-        if destination and destination['resource_type'] == 'Folder':
-            path = os.path.join(
-                destination['folder_relative_path'], destination['name'])
-        copied_name = file_node['rename'] if file_node.get(
-            'rename') else source_name
-        output_path = os.path.join(path, ouput_relative_path, copied_name)
-        root_folder = path.split('/')[0]
-        if not destination:
-            output_path = os.path.join(root_folder, ouput_relative_path, copied_name)
-        return source_object_name, output_path
-
-def copy_zippreview(old_geid, new_geid):
-    url = ConfigClass.DATA_OPS_GR + "archive"
-    get_params = {
-        "file_geid": old_geid
-    }
-    response_get = requests.get(url=url, params=get_params)
-    if response_get.status_code == 404:
-        return
-    if response_get.status_code != 200:
-        raise Exception(response_get.text)
-    json_response_get = response_get.json()
-    archive_preview = json_response_get['result']
-    post_url = ConfigClass.DATA_OPS_GR + "archive"
-    post_json = {
-        "file_geid": new_geid,
-        "archive_preview": archive_preview
-    }
-    post_response = requests.post(url=post_url, json=post_json)
-    if post_response.status_code != 200:
-        raise Exception(post_response.text)
-
-def refresh_node(target: dict, new: dict):
-    for k, v in new.items():
-        target[k] = v
 
 if __name__ == "__main__":
     try:

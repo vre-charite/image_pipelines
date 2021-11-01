@@ -18,6 +18,8 @@ def parse_inputs():
         metavar='PATH', required=True)
     parser.add_argument('-t', '--trash-path', help='Trash folder path', 
         metavar='PATH', required=True)
+    parser.add_argument('-j', '--job-id',
+                        help='Job geid', required=True)
     parser.add_argument('-env', '--environment',
                         help='Environment', required=True)
     parser.add_argument('-p', '--project-code',

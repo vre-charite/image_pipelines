@@ -7,13 +7,14 @@ import time
 import datetime
 from minio.credentials.providers import ClientGrantsProvider
 from minio.commonconfig import REPLACE, CopySource
+from config import ConfigClass
 
 
 class Minio_Client_():
 
 
-    def __init__(self, _config, access_token, refresh_token):
-        self._config = _config
+    def __init__(self, access_token, refresh_token):
+        # self._config = _config
         # preset the tokens for refreshing
         self.access_token = access_token
         self.refresh_token = refresh_token
@@ -22,9 +23,9 @@ class Minio_Client_():
         c = self.get_provider()
 
         self.client = Minio(
-            self._config.MINIO_ENDPOINT, 
+            ConfigClass.MINIO_ENDPOINT, 
             credentials=c,
-            secure=self._config.MINIO_HTTPS)
+            secure=ConfigClass.MINIO_HTTPS)
 
 
     # function helps to get new token/refresh the token
@@ -33,14 +34,14 @@ class Minio_Client_():
         payload = {
             "grant_type" : "refresh_token",
             "refresh_token": self.refresh_token,
-            "client_id":self._config.MINIO_OPENID_CLIENT,
+            "client_id":ConfigClass.MINIO_OPENID_CLIENT,
         }
         headers = {
             "Content-Type": "application/x-www-form-urlencoded"
         }
 
         # use http request to fetch from keycloak
-        result = requests.post(self._config.KEYCLOAK_URL+"/vre/auth/realms/vre/protocol/openid-connect/token", data=payload, headers=headers)
+        result = requests.post(ConfigClass.KEYCLOAK_URL+"/vre/auth/realms/vre/protocol/openid-connect/token", data=payload, headers=headers)
         if result.status_code != 200:
             raise Exception("Token refresh failed with "+str(result.json()))
 
@@ -55,7 +56,7 @@ class Minio_Client_():
     # use the function above to create a credential object in minio
     # it will use the jwt function to refresh token if token expired
     def get_provider(self):
-        minio_http = ("https://" if self._config.MINIO_HTTPS else "http://") + self._config.MINIO_ENDPOINT
+        minio_http = ("https://" if ConfigClass.MINIO_HTTPS else "http://") + ConfigClass.MINIO_ENDPOINT
         # print(minio_http)
         provider = ClientGrantsProvider(
             self._get_jwt,
@@ -84,16 +85,16 @@ class Minio_Client_():
 
 class Minio_Client():
 
-    def __init__(self, _config):
+    def __init__(self):
         # set config
-        self._config = _config
+        # self._config = _config
 
         # Temperary use the credential
         self.client = Minio(
-            self._config.MINIO_ENDPOINT, 
-            access_key=self._config.MINIO_ACCESS_KEY,
-            secret_key=self._config.MINIO_SECRET_KEY,
-            secure=self._config.MINIO_HTTPS)
+            ConfigClass.MINIO_ENDPOINT, 
+            access_key=ConfigClass.MINIO_ACCESS_KEY,
+            secret_key=ConfigClass.MINIO_SECRET_KEY,
+            secure=ConfigClass.MINIO_HTTPS)
 
 
     def copy_object(self, bucket, obj, source_bucket, source_obj):

@@ -10,14 +10,16 @@ class FolderMgr:
     '''
     Folder Manager
     '''
-    def __init__(self, created_folders_cache, project_geid, project_code, relative_path, folder_tags, zone):
+    def __init__(self, created_folders_cache, project_geid, \
+        project_code, relative_path, folder_tags, zone, source_folder_path):
         self.cache = created_folders_cache
         self.project_geid = project_geid
         self.project_code = project_code
         self.relative_path = relative_path
-        self.folder_tags = folder_tags
+        self.folder_tags = folder_tags # some design issue here this is not been used
         self.last_node = None
         self.zone = zone
+        self.source_folder_path = source_folder_path
 
     def create(self, creator):
         '''
@@ -31,20 +33,34 @@ class FolderMgr:
         '''
         try:
             path_splitted = self.relative_path.split('/')
-            nl_pairs = [{"name": node, "level": level}
+            source_path_splitted = self.source_folder_path.split('/')
+            print(path_splitted)
+            print(source_path_splitted)
+            nl_pairs = [{"name": node, "level": level, "source_name": source_path_splitted[level]}
                         for level, node in enumerate(path_splitted)] if len(path_splitted) > 0 \
-                and not path_splitted[0] == "" else []
+                        and not path_splitted[0] == "" else []
             node_chain = []
             for name_and_level in nl_pairs:
                 folder_relative_path = "/".join(
                     path_splitted[:name_and_level['level']])
+                source_relative_path = "/".join(
+                    source_path_splitted[:name_and_level['level']])
                 new_node = FolderNode(self.project_code, name_and_level['name'],
                                       folder_relative_path, creator, self.cache, self.zone)
                 if not new_node.exist:
                     # join relative path
                     new_node.folder_name = name_and_level['name']
                     new_node.folder_level = name_and_level['level']
-                    new_node.folder_tags = self.folder_tags
+
+                    query = {
+                        "folder_relative_path": source_relative_path,
+                        "name": name_and_level['source_name'],
+                        "project_code": self.project_code
+                    }
+                    respon_query = http_query_node_zone("greenroom", query)
+                    source_node = respon_query.json().get("result")[0]
+
+                    new_node.folder_tags = source_node.get("tags")
                     if name_and_level['level'] == 0:
                         new_node.folder_parent_name = self.project_code
                         new_node.folder_parent_geid = self.project_geid
@@ -256,7 +272,7 @@ def http_query_node(namespace, query_params={}):
     payload = {
         **query_params
     }
-    node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/Folder/query"
+    node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/%s/query"%(namespace)
     response = requests.post(node_query_url, json=payload)
     return response
 
@@ -274,5 +290,6 @@ def http_query_node_zone(namespace, query_params={}, extra_labels=[]):
         **query_params}
     }
     node_query_url = ConfigClass.NEO4J_SERVICE_V2 + "nodes/query"
+    # print(node_query_url, payload)
     response = requests.post(node_query_url, json=payload)
     return response

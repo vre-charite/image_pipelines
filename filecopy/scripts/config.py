@@ -3,6 +3,7 @@ import requests
 from requests.models import HTTPError
 
 CONFIG_CENTER = "http://common.utility:5062"
+#CONFIG_CENTER = "http://10.3.7.222:5062"
 _config = None
 
 def config_singleton(env="test"):
@@ -79,6 +80,7 @@ class ConfigClass(object):
         self.CATALOGUING_SERVICE = vault["CATALOGUING_SERVICE"] + "v1/"
         self.CATALOGUING_SERVICE_V2 = vault["CATALOGUING_SERVICE"] + "/v2/"
         self.KEYCLOAK_VRE_SECRET = vault["KEYCLOAK_VRE_SECRET"]
+        self.COMMON_SERVICE = vault['UTILITY_SERVICE']+"/v1/"
 
         # envs
         self.copied_with_approval = 'copied-to-core'

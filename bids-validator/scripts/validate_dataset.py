@@ -7,7 +7,8 @@ import time
 import psycopg2
 import argparse
 from datetime import datetime
-from config import config_singleton, set_config, config_factory
+#from config import config_singleton, set_config, config_factory
+from config import ConfigClass
 import traceback
 import shutil
 from minio_client import Minio_Client, Minio_Client_
@@ -16,8 +17,8 @@ TEMP_FOLDER = './dataset/'
 
 
 def get_dataset_url(geid, access_token, refresh_token):
-    _config = config_singleton()
-    DOWNLOAD_SERVICE = _config.DOWNLOAD_SERVICE
+    # _config = config_singleton()
+    DOWNLOAD_SERVICE = ConfigClass.DOWNLOAD_SERVICE
 
     dataset_url = "{}/v2/dataset/download/pre".format(DOWNLOAD_SERVICE)
     payload = {
@@ -37,8 +38,8 @@ def get_dataset_url(geid, access_token, refresh_token):
 
 
 def download_status(hash_code):
-    _config = config_singleton()
-    DOWNLOAD_SERVICE = _config.DOWNLOAD_SERVICE
+    # _config = config_singleton()
+    DOWNLOAD_SERVICE = ConfigClass.DOWNLOAD_SERVICE
 
     url = DOWNLOAD_SERVICE + f"/v1/download/status/{hash_code}"
     res = requests.get(url)
@@ -85,8 +86,8 @@ def download_and_unzip(url: str, dest_folder: str):
 
 
 def debug_message_sender(message: str):
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + "files/actions/message"
+    # _config = config_singleton()
+    url = ConfigClass.DATA_OPS_UT + "files/actions/message"
     response = requests.post(url, json={
         "message": message,
         "channel": "pipelinewatch"
@@ -122,8 +123,8 @@ def parse_inputs():
 
 
 def send_message(dataset_geid, bids_output, is_error=False):
-    _config = config_singleton()
-    queue_url = _config.QUEUE_SERVICE + "broker/pub"
+    # config = config_singleton()
+    queue_url = ConfigClass.QUEUE_SERVICE + "broker/pub"
     post_json = {
         "event_type": "BIDS_VALIDATE_NOTIFICATION",
         "payload": {
@@ -169,7 +170,7 @@ def send_message(dataset_geid, bids_output, is_error=False):
 
 
 def get_files_recursive(dataset_geid, folder_geid=None, all_files=[]):
-    _config = config_singleton()
+    # _config = config_singleton()
 
     query = {
         "page": 0,
@@ -180,7 +181,7 @@ def get_files_recursive(dataset_geid, folder_geid=None, all_files=[]):
     if folder_geid:
         query["folder_geid"] = folder_geid
 
-    resp = requests.get(_config.DATASET_SERVICE +
+    resp = requests.get(ConfigClass.DATASET_SERVICE +
                         "/dataset/{}/files".format(dataset_geid), params=query)
     for node in resp.json()["result"]['data']:
         if "File" in node["labels"]:
@@ -192,8 +193,8 @@ def get_files_recursive(dataset_geid, folder_geid=None, all_files=[]):
 
 
 def download_from_minio(files_locations, auth_token):
-    _config = config_singleton()
-    mc = Minio_Client_(_config, auth_token["at"], auth_token["rt"])
+    # _config = config_singleton()
+    mc = Minio_Client_(auth_token["at"], auth_token["rt"])
     logger_info("========Minio_Client Initiated========")
 
     for file_location in files_locations:
@@ -219,16 +220,16 @@ def read_result_file():
 def main():
     try:
         environment = args.get('environment', 'test')
-        set_config(config_factory(environment))
+        # set_config(config_factory(environment))
         logger_info('environment: ' + str(args.get('environment')))
         logger_info('config set: ' + environment)
-        _config = config_singleton(environment)
+        # _config = config_singleton(environment)
 
-        DOWNLOAD_SERVICE = _config.DOWNLOAD_SERVICE
+        DOWNLOAD_SERVICE = ConfigClass.DOWNLOAD_SERVICE
 
         # connect to the postgres database
-        conn = psycopg2.connect(dbname=_config.POSTGREL_DB, user=_config.POSTGREL_USER,
-                                password=_config.POSTGREL_PWD, host=_config.POSTGREL_HOST)
+        conn = psycopg2.connect(dbname=ConfigClass.POSTGREL_DB, user=ConfigClass.POSTGREL_USER,
+                                password=ConfigClass.POSTGREL_PWD, host=ConfigClass.POSTGREL_HOST)
         cur = conn.cursor()
 
         # get arguments
