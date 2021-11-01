@@ -306,7 +306,7 @@ def copy_object_single_file(bucket, object_name: str, source_bucket, source_obje
         logger_info("========Minio_Client Initiated========")
         file_size_gb = mc.client.stat_object(source_bucket, source_object_name).size
         versioning = None
-        if file_size_gb < 5:
+        if file_size_gb < 5e+9:
             logger_info("File size less than 5GiB")
             # move minio file objects
             # copy an object from a bucket to another.
