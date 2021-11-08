@@ -278,6 +278,8 @@ def recursive_copy(currenct_nodes, dataset, oper, current_root_path, \
             update_json = {'archived': True}
             if new_name: update_json.update({"name": new_name})
             http_update_node("Folder", ff_object.get("id"), update_json)
+            
+            unlock_resource(old_lockkey)
 
 
         ##########################################################################################################
