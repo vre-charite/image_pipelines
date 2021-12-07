@@ -6,9 +6,9 @@ from typing import Optional
 
 import requests
 from requests import Response
+from zipfile import ZipFile
 
 from config import ConfigClass
-from models import Node
 
 
 def http_query_node(primary_label, query_params=None):
@@ -25,7 +25,7 @@ def http_query_node(primary_label, query_params=None):
     return response
 
 
-def get_resource_by_geid(geid: str) -> Node:
+def get_resource_by_geid(geid):
     """Function will call the neo4j api to get the node by geid.
 
     Raise exception if the geid is not exist.
@@ -38,7 +38,7 @@ def get_resource_by_geid(geid: str) -> Node:
     if len(nodes) == 0:
         raise Exception('Not found resource: ' + geid)
 
-    return Node(nodes[0])
+    return nodes[0]
 
 
 def http_update_node(primary_label, neo4j_id, update_json):
@@ -48,54 +48,6 @@ def http_update_node(primary_label, neo4j_id, update_json):
     print(update_json)
     print(res.json())
     return res
-
-
-def lock_resource(resource_key: str, operation: str) -> Dict[str, Any]:
-    # operation can be either read or write
-    print("====== Lock resource:", resource_key)
-    url = ConfigClass.DATA_OPS_UT_V2 + 'resource/lock'
-    post_json = {
-        "resource_key": resource_key,
-        "operation": operation
-    }
-
-    response = requests.post(url, json=post_json)
-    if response.status_code != 200:
-        raise Exception("resource %s already in used"%resource_key)
-
-    return response.json()
-
-
-def unlock_resource(resource_key: str, operation: str) -> Dict[str, Any]:
-    # operation can be either read or write
-    print("====== Unlock resource:", resource_key)
-    url = ConfigClass.DATA_OPS_UT_V2 + 'resource/lock'
-    post_json = {
-        "resource_key": resource_key,
-        "operation": operation
-    }
-
-    response = requests.delete(url, json=post_json)
-    if response.status_code != 200:
-        raise Exception("Error when unlock resource %s"%resource_key)
-
-    return response.json()
-
-
-def debug_message_sender(message: str) -> None:
-    url = ConfigClass.DATA_OPS_UT + "files/actions/message"
-    response = requests.post(url, json={
-        "message": message,
-        "channel": "pipelinewatch"
-    })
-    if response.status_code != 200:
-        print("code: " + str(response.status_code) + ": " + response.text)
-    return
-
-
-def logger_info(message: str):
-    debug_message_sender(message)
-    print(message)
 
 
 class MetaDataFactory:
@@ -174,10 +126,10 @@ class MetaDataFactory:
                 "archived": True,
             }
         }
-        logger_info(f"es delete file payload: {es_payload}")
+        # logger_info(f"es delete file payload: {es_payload}")
         es_res = requests.put(
             ConfigClass.PROVENANCE_SERVICE + 'entity/file', json=es_payload)
-        logger_info(f"es delete trash file response: {es_res.text}")
+        # logger_info(f"es delete trash file response: {es_res.text}")
 
         return es_res
 
@@ -278,10 +230,8 @@ def update_job(
     if add_payload is None:
         add_payload = {}
 
-################################################### job functions #######################################
-
-def update_job(session_id, job_id, status, add_payload={}, progress=0):
-    url = ConfigClass.DATA_OPS_UT + "tasks"
+    _config = config_singleton()
+    url = _config.DATA_OPS_UT + 'tasks'
     response = requests.put(url, json={
         'session_id': session_id,
         'job_id': job_id,
@@ -289,7 +239,7 @@ def update_job(session_id, job_id, status, add_payload={}, progress=0):
         'add_payload': add_payload,
         'progress': progress,
     })
-    logger_info(str(response.text))
+    # logger_info(str(response.text))
 
 
 def get_job(job_id):
@@ -308,3 +258,43 @@ def get_job(job_id):
 def get_session_id(job_id):
     job = get_job(job_id)
     return job["session_id"]
+
+
+def parse_zip(file_path, type="zip"):
+    results = {}
+    if type == "zip":
+        ArchiveFile = ZipFile
+
+    with ArchiveFile(file_path, 'r') as archive:
+        for file in archive.infolist():
+            # get filename for file
+            filename = file.filename.split("/")[-1]
+            if not filename:
+                # get filename for folder
+                filename = file.filename.split("/")[-2]
+            current_path = results
+            for path in file.filename.split("/")[:-1]:
+                if path:
+                    if not current_path.get(path):
+                        current_path[path] = {"is_dir": True}
+                    current_path = current_path[path]
+
+            if not file.is_dir():
+                current_path[filename] = {
+                    "filename": filename,
+                    "size": file.file_size,
+                    "is_dir": False,
+                }
+    return results
+
+
+def save_preview(zip_preview, file_geid):
+    try:
+        # Store zip file preview in postgres
+        payload = {
+            "archive_preview": zip_preview,
+            "file_geid": file_geid,
+        }
+        response = requests.post(ConfigClass.DATA_OPS_GR + "archive", json=payload)
+    except Exception as e:
+        raise e

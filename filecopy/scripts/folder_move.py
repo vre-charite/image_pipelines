@@ -1,55 +1,54 @@
-# import datetime
-import os 
 import argparse
-import time
-import requests
+import os
 import traceback
-import re
-import json
 
-# from folder import http_query_node, http_query_node_zone
-from utils import get_resource_by_geid, http_update_node, http_query_node,\
-    lock_resource, unlock_resource, debug_message_sender, logger_info
-from utils import update_job, get_job, get_session_id
-from utils import deprecate_index_in_es, create_lineage_v3, update_file_operation_logs, \
-    create_es_search_index, create_catalog_entity
-
-from config import config_singleton, set_config, config_factory
-from minio_client import Minio_Client, Minio_Client_
-
-from neo4j_helper import get_node_by_geid, get_parent_node, \
-    get_children_nodes, delete_relation_bw_nodes, delete_node, create_file_node, \
-    create_folder_node, archived_file_node
-
-
-ConfigClass = None
+from config import ConfigClass
+from minio_client import Minio_Client_
+from models import append_suffix_to_filepath
+from models import get_timestamp
+from models import Node
+from models import ResourceType
+from neo4j_helper import archived_file_node
+from neo4j_helper import create_folder_node
+from neo4j_helper import get_children_nodes
+from utils import get_resource_by_geid
+from utils import get_session_id
+from utils import http_query_node
+from utils import http_update_node
+from utils import lock_resource
+from utils import logger_info
+from utils import MetaDataFactory
+from utils import unlock_resource
+from utils import update_job
 
 PROCESS_PIPELINE = "data_delete_folder"
 PIPELINE_DESC = '''
     the script will delete the folder in greenroom/core recursively
 '''
+OPERATION_TYPE = "data_delete"
 
 
-#################################################################################################################
-class DeleteObjects():
-    def __init__(self, minio_client, project, oper):
+class DeleteObjects:
+    def __init__(self, minio_client, metadata_factory):
         self.mc = minio_client
-        self.project = project
-        self.oper = oper
+        self.metadata_factory = metadata_factory
 
-    def recursive_delete(self, currenct_nodes, current_root_path, parent_node, new_name=None):
+        self.project = self.metadata_factory.project
+        self.oper = self.metadata_factory.oper
+        self.zone_label = self.metadata_factory.zone_label
+
+    def recursive_delete(self, currenct_nodes, current_root_path, parent_node: Node, new_name=None):
         # copy the files under the project neo4j node to dataset node
         for ff_object in currenct_nodes:
             ff_geid = ff_object.get("global_entity_id")
             # TODO update here
-            zone, zone_label = ("greenroom", "Greenroom") if "Greenroom" in ff_object.get("labels") \
-                else ("vrecore", "VRECore")
+            # zone, zone_label = ("greenroom", "Greenroom") if "Greenroom" in ff_object.get("labels") \
+            # else ("vrecore", "VRECore")
 
             # update here if the folder/file is archieved then skip
             if ff_object.get("archived", False):
                 continue
 
-            ################################################################################################
             print(ff_object)
 
             # recursive logic below
@@ -58,275 +57,192 @@ class DeleteObjects():
                 minio_path = ff_object.get('location').split("//")[-1]
                 _, bucket, old_path = tuple(minio_path.split("/", 2))
 
-                # # lock the resource
-                # lockkey_template = "{}/{}"
-                # old_lockkey = "{}/{}".format(bucket, old_path)
-                # new_lockkey = lockkey_template.format(
-                #     current_root_path, new_name if new_name else ff_object.get("name"))
-                
-                # # try to aquire the lock for old path and lock the new resources
-                # lock_resource(old_lockkey)
-                # lock_resource(new_lockkey)
-
-                
                 # file will need extra step to get all attribute
                 # the format of attribute is {"attr_<field>": "value"}
-                attr = {x:ff_object[x] for x in ff_object if "attr" in x}
+                attr = {x: ff_object[x] for x in ff_object if "attr" in x}
                 # TODO move the other place
-                extra_fields = {"archived":True, "in_trashbin":True, 
-                    "list_priority":parent_node.get("list_priority", 10)}
+                extra_fields = {
+                    "archived": True,
+                    "in_trashbin": True,
+                    "list_priority": parent_node.get("list_priority", 10),
+                }
                 tags = ff_object.get("tags")
                 # create the copied node
-                new_node, _ = archived_file_node(self.project.get("code"), ff_object, \
-                    self.oper, parent_node.get('id'), current_root_path, self.mc, tags=tags, \
-                    attribute=attr, new_name=new_name, extra_labels=["TrashFile", zone_label], \
-                    extra_fields=extra_fields) 
-
+                new_node, _ = archived_file_node(
+                    self.project.get("code"),
+                    ff_object,
+                    self.oper,
+                    parent_node.get('id'),
+                    current_root_path,
+                    self.mc,
+                    tags=tags,
+                    attribute=attr,
+                    new_name=new_name,
+                    extra_labels=[ResourceType.TRASH_FILE, self.metadata_factory.zone_label],
+                    extra_fields=extra_fields,
+                )
 
                 ################################## Metadata Generating ###################################
                 source_geid = ff_object.get("global_entity_id")
                 target_geid = new_node.get("global_entity_id")
-                project_code = self.project.get("code")
-                # unix_process_time = datetime.datetime.utcnow().timestamp()
 
                 # create the new node in atlas for lineage linking
-                guid = create_catalog_entity(new_node, self.oper)
+                guid = self.metadata_factory.create_catalog_entity(new_node)
 
                 # create the lineage link between greenroom -> relation -> core
-                create_lineage_v3(source_geid, target_geid, project_code, PROCESS_PIPELINE,
-                    PIPELINE_DESC)
+                self.metadata_factory.create_lineage_v3(source_geid, target_geid)
 
                 # deprecate old node in es
-                deprecate_index_in_es(ff_object.get("global_entity_id"))
+                self.metadata_factory.deprecate_index_in_es(ff_object.get("global_entity_id"))
 
                 # create the file stream/operational logs index in elastic search
-                res_update_audit_logs = update_file_operation_logs(
-                    ff_object.get('uploader'), self.oper,
-                    os.path.join('Greenroom', ff_object.get("display_path", "")),
-                    os.path.join('VRECore', new_node.get("display_path", "")),
-                    ff_object.get('file_size', 0),
-                    project_code,
-                    ff_object.get("generate_id", "undefined"),
-                    operation_type="data_delete"
+                res_update_audit_logs = self.metadata_factory.update_file_operation_logs(
+                    os.path.join(self.zone_label, ff_object.get("display_path", "")),
+                    os.path.join(self.zone_label, new_node.get("display_path", ""))
                 )
-                logger_info('res_update_audit_logs: ' +
-                    str(res_update_audit_logs.status_code))
+                logger_info('res_update_audit_logs: ' + str(res_update_audit_logs.status_code))
 
                 # update the old node to archived
                 update_json = {'archived': True}
-                # if new_name: update_json.update({"name": new_name})
                 http_update_node("File", ff_object.get("id"), update_json)
-
-
-                # unlock_resource(old_lockkey)
-                # unlock_resource(new_lockkey)
 
             # else it is folder will trigger the recursive
             elif 'Folder' in ff_object.get("labels"):
 
                 # first create the trash folder node
-                extra_fields = {"archived":True, "in_trashbin":True, 
-                    "list_priority":parent_node.get("list_priority", 20)}
+                extra_fields = {
+                    "archived": True,
+                    "in_trashbin": True,
+                    "list_priority": parent_node.get("list_priority", 20),
+                }
                 tags = ff_object.get("tags")
-                new_node, _ = create_folder_node(self.project.get("code"), ff_object, self.oper, \
-                    parent_node, current_root_path, tags=tags, new_name=new_name, \
-                    extra_labels=["TrashFile", zone_label], extra_fields=extra_fields)
+                new_node, _ = create_folder_node(
+                    self.project.get("code"),
+                    ff_object,
+                    self.metadata_factory.oper,
+                    parent_node,
+                    current_root_path,
+                    tags=tags,
+                    new_name=new_name,
+                    extra_labels=[ResourceType.TRASH_FILE, self.zone_label],
+                    extra_fields=extra_fields,
+                )
 
                 # deprecate old node in es
-                deprecate_index_in_es(ff_object.get("global_entity_id"))
-                
+                self.metadata_factory.deprecate_index_in_es(ff_object.get("global_entity_id"))
+
                 # seconds recursively go throught the folder/subfolder by same proccess
                 # also if we want the folder to be renamed if new_name is not None
-                next_root = current_root_path+"/"+(new_name if new_name else ff_object.get("name"))
+                next_root = current_root_path + "/" + (new_name if new_name else ff_object.get("name"))
                 children_nodes = get_children_nodes(ff_geid)
                 self.recursive_delete(children_nodes, next_root, new_node)
 
                 # update the old node to archived
                 update_json = {'archived': True}
-                # if new_name: update_json.update({"name": new_name})
                 http_update_node("Folder", ff_object.get("id"), update_json)
 
-        return 
+        return
+
+    #################################################################################################################
 
 
-#################################################################################################################
+# TODO somehow refactory here?
+def recursive_lock(code, nodes, zone):
+    """Function will recursively lock the node tree."""
+
+    bucket_prefix = "gr-" if zone == "greenroom" else "core-"
+    # this is for crash recovery, if something trigger the exception
+    # we will unlock the locked node only. NOT the whole tree. The example
+    # case will be copy the same node, if we unlock the whole tree in exception
+    # then it will affect the processing one.
+    locked_node, err = [], None
+
+    def recur_walker(currenct_nodes):
+        """Recursively trace down the node tree and run the lock function."""
+
+        for ff_object in currenct_nodes:
+            # we will skip the deleted nodes
+            if ff_object.get("archived", False):
+                continue
+
+            # conner case here, we DONT lock the name folder
+            # for the copy we will lock the both source and target
+            if ff_object.get("display_path") != ff_object.get("uploader"):
+                source_key = "{}/{}".format(bucket_prefix + code, ff_object.get("display_path"))
+                lock_resource(source_key, "write")
+                locked_node.append((source_key, "write"))
+
+            # open the next recursive loop if it is folder
+            if 'Folder' in ff_object.get("labels"):
+                children_nodes = get_children_nodes(ff_object.get("global_entity_id", None))
+                recur_walker(children_nodes)
+
+        return
+
+    # start here
+    try:
+        recur_walker(nodes)
+    except Exception as e:
+        err = e
+
+    return locked_node, err
 
 
-def recursive_copy(currenct_nodes, dataset, oper, current_root_path, \
-    parent_node, minio_client:Minio_Client_, job_tracker=None, new_name=None):
-    '''
-        This is a recursive function. When it detects the folder will continue
-        expand to its children nodes(ignoring archived node).
-    '''
+def delete_execute(job_id, input_geid, project_code, operator, auth_token: dict):
+    """Entry point for the deletion logic. inside function, it will do some
+    paperation(eg. fecthing necessary infomation), then calling recursive
+    function recursive_copy to archive the input nodes."""
 
-    num_of_files = 0
-    total_file_size = 0
-    # this variable DOESNOT contain the child nodes
-    new_lv1_nodes = []
-
-    # copy the files under the project neo4j node to dataset node
-    for ff_object in currenct_nodes:
-        ff_geid = ff_object.get("global_entity_id")
-        new_node = None
-        # TODO update here
-        zone, zone_label, bucket_prefix = ("greenroom", "Greenroom", "gr-") \
-            if "Greenroom" in ff_object.get("labels") \
-            else ("vrecore", "VRECore", "core-")
-
-        # update here if the folder/file is archieved then skip
-        if ff_object.get("archived", False):
-            continue
-
-        ################################################################################################
-        print(ff_object)
-
-        # recursive logic below
-        if 'File' in ff_object.get("labels"):
-            # TODO simplify here
-            minio_path = ff_object.get('location').split("//")[-1]
-            _, bucket, old_path = tuple(minio_path.split("/", 2))
-
-            # lock the resource
-            lockkey_template = "{}/{}"
-            old_lockkey = "{}/{}".format(bucket, old_path)
-            
-            # try to aquire the lock for old path and lock the new resources
-            lock_resource(old_lockkey)
-
-            
-            # file will need extra step to get all attribute
-            # the format of attribute is {"attr_<field>": "value"}
-            attr = {x:ff_object[x] for x in ff_object if "attr" in x}
-            # TODO move the other place
-            extra_fields = {"archived":True, "in_trashbin":True}
-            tags = ff_object.get("tags")
-            # create the copied node
-            new_node, _ = archived_file_node(dataset.get("code"), ff_object, oper, parent_node.get('id'), \
-                current_root_path, minio_client, tags=tags, attribute=attr, \
-                new_name=new_name, extra_labels=["TrashFile", zone_label], extra_fields=extra_fields) 
-
-
-            ################################## Metadata Generating ###################################
-            source_geid = ff_object.get("global_entity_id")
-            target_geid = new_node.get("global_entity_id")
-            project_code = dataset.get("code")
-            # unix_process_time = datetime.datetime.utcnow().timestamp()
-
-            # create the new node in atlas for lineage linking
-            guid = create_catalog_entity(new_node, oper)
-
-            # create the lineage link between greenroom -> relation -> core
-            create_lineage_v3(source_geid, target_geid, project_code, PROCESS_PIPELINE,
-                PIPELINE_DESC)
-
-            # deprecate old node in es
-            deprecate_index_in_es(ff_object.get("global_entity_id"))
-            
-
-            # # create the file stream/operational logs index in elastic search
-            res_update_audit_logs = update_file_operation_logs(
-                ff_object.get('uploader'), oper,
-                os.path.join('Greenroom', ff_object.get("display_path", "")),
-                os.path.join('VRECore', new_node.get("display_path", "")),
-                ff_object.get('file_size', 0),
-                project_code,
-                ff_object.get("generate_id", "undefined"),
-                operation_type="data_delete"
-            )
-            logger_info('res_update_audit_logs: ' +
-                str(res_update_audit_logs.status_code))
-
-            # update the old node to archived
-            update_json = {'archived': True}
-            if new_name: update_json.update({"name": new_name})
-            http_update_node("File", ff_object.get("id"), update_json)
-
-
-            unlock_resource(old_lockkey)
-
-        # else it is folder will trigger the recursive
-        elif 'Folder' in ff_object.get("labels"):
-
-            # lock the resource
-            lockkey_template = "{}/{}"
-            old_lockkey = lockkey_template.format(bucket_prefix+dataset.get("code"), ff_object.get("display_path"))
-            
-            # try to aquire the lock for old path and lock the new resources
-            lock_resource(old_lockkey)
-
-
-            extra_fields = {"archived":True, "in_trashbin":True}
-            # first create the folder
-            tags = ff_object.get("tags")
-            new_node, _ = create_folder_node(dataset.get("code"), ff_object, oper, \
-                parent_node, current_root_path, tags=tags, new_name=new_name, \
-                extra_labels=["TrashFile", zone_label], extra_fields=extra_fields)
-
-            # deprecate old node in es
-            print("====== deprecate search index in ES")
-            deprecate_index_in_es(ff_object.get("global_entity_id"))
-            
-            # seconds recursively go throught the folder/subfolder by same proccess
-            # also if we want the folder to be renamed if new_name is not None
-            next_root = current_root_path+"/"+(new_name if new_name else ff_object.get("name"))
-            children_nodes = get_children_nodes(ff_geid)
-            num_of_child_files, num_of_child_size, _ = \
-                recursive_copy(children_nodes, dataset, oper, next_root, new_node, \
-                    minio_client)
-
-            # update the old node to archived
-            update_json = {'archived': True}
-            if new_name: update_json.update({"name": new_name})
-            http_update_node("Folder", ff_object.get("id"), update_json)
-            
-            unlock_resource(old_lockkey)
-
-
-        ##########################################################################################################
-    return num_of_files, total_file_size, new_lv1_nodes
-
-
-def dele_execute(job_id, input_geid, project_code, operator, auth_token: dict):
-    '''
-        Entry point for the deletion logic. inside function, it will do some
-        paperation(eg. fecthing necessary infomation), then calling recursive
-        function recursive_copy to archive the input nodes.
-    '''
     print("====== Delete Start")
-    source_folder_node = get_resource_by_geid(input_geid)
-    print("source:", source_folder_node)
-    
+    source_node = get_resource_by_geid(input_geid)
+    print("source:", source_node)
+
     # get project
     project_response = http_query_node('Container', {"code": project_code})
     project_info = project_response.json()[0]
-    output_folder_name = source_folder_node['name'] + "_" + str(round(time.time()))
+    output_folder_name = append_suffix_to_filepath(source_node['name'], get_timestamp())
 
-    # initialize the minio outside to keep one instance of credential
-    # if dont do so, the large folder will cause the initial token expire
-    mc = Minio_Client_(ConfigClass, auth_token["at"], auth_token["rt"])
-    # delete_object = DeleteObjects(mc, project_info, operator)
-    # delete_object.recursive_delete([source_folder_node], source_folder_node.get("uploader"), \
-    #     project_info, new_name=output_folder_name)
+    locked_node = []
+    try:
+        zone = "greenroom" if "Greenroom" in source_node.get("labels") else "vrecore"
+        # at begining lock the whole node tree
+        locked_node, err = recursive_lock(project_info.get("code"), [source_node], zone)
+        if err:
+            raise err
 
-    # the deleted folder will be attached directly under the project
-    recursive_copy([source_folder_node], project_info, operator, source_folder_node.get("uploader"), \
-        project_info, mc, new_name=output_folder_name)
+        # initialize the minio outside to keep one instance of credential
+        # if dont do so, the large folder will cause the initial token expire
+        mc = Minio_Client_(auth_token["at"], auth_token["rt"])
 
- 
-######################################### Main ########################################
+        metadata_factory = MetaDataFactory(
+            project_info, operator, zone, PROCESS_PIPELINE, PIPELINE_DESC, OPERATION_TYPE
+        )
+
+        delete_object = DeleteObjects(mc, metadata_factory)
+        delete_object.recursive_delete(
+            [source_node], source_node.get("uploader"), project_info, new_name=output_folder_name
+        )
+    except Exception as e:
+        raise e
+    finally:
+        # here we unlock the locked nodes ONLY
+        print("Start to unlock the nodes")
+        for resource_key, operation in locked_node:
+            unlock_resource(resource_key, operation)
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
-        description = __doc__,
-        formatter_class = argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('-i', '--input-geid', help='Sepecify input file', 
+    parser.add_argument('-i', '--input-geid', help='Sepecify input file',
                         metavar='FILE/Folder', required=True)
     parser.add_argument('-env', '--environment',
                         help='Environment', required=True)
     parser.add_argument('-p', '--project-code',
                         help='Project code', required=True)
-    parser.add_argument('-t', '--trash-path', help='Trash folder path', 
+    parser.add_argument('-t', '--trash-path', help='Trash folder path',
                         metavar='PATH', required=True)
     parser.add_argument('-op', '--operator',
                         help='Action operator', required=True)
@@ -342,13 +258,9 @@ def parse_inputs():
 
 
 def main():
-    global ConfigClass
     try:
         # fecthing all the varibale/parameter from the script args
         environment = args.get('environment', 'test')
-        set_config(config_factory(environment))
-        _config = config_singleton(environment)
-        ConfigClass = _config
 
         job_id = args['job_id']
         input_geid = args['input_geid']
@@ -358,7 +270,7 @@ def main():
 
         logger_info('environment: ' + str(args.get('environment')))
         logger_info('config set: ' + environment)
-        logger_info('_config environment: ' + str(_config.env))
+        logger_info('_config environment: ' + str(ConfigClass.env))
 
         # add new variable for the minio token
         token = {
@@ -366,7 +278,7 @@ def main():
             "rt": args['refresh_token']
         }
         try:
-            dele_execute(job_id, input_geid, project_code, operator, token)
+            delete_execute(job_id, input_geid, project_code, operator, token)
             update_job(session_id, job_id, 'SUCCEED')
             logger_info(f'Successfully moved file from {input_geid} ')
 
@@ -375,8 +287,9 @@ def main():
             update_job(session_id, job_id, 'TERMINATED', add_payload={'error_msg': str(e)})
             logger_info(error_msg)
             raise
-    except Exception as e:
+    except Exception:
         raise
+
 
 if __name__ == "__main__":
     try:
@@ -388,4 +301,3 @@ if __name__ == "__main__":
         for info in traceback.format_stack():
             logger_info(info)
         raise
-

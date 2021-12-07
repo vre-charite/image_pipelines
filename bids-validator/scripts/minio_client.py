@@ -1,5 +1,4 @@
 import requests
-import xmltodict
 from minio import Minio
 from minio.commonconfig import Tags
 import os
@@ -12,9 +11,7 @@ from config import ConfigClass
 
 class Minio_Client_():
 
-
     def __init__(self, access_token, refresh_token):
-        # self._config = _config
         # preset the tokens for refreshing
         self.access_token = access_token
         self.refresh_token = refresh_token
@@ -27,17 +24,22 @@ class Minio_Client_():
             credentials=c,
             secure=ConfigClass.MINIO_HTTPS)
 
+        # add a sanity check for the token to see if the token
+        # is expired
+        self.client.list_buckets()
+
 
     # function helps to get new token/refresh the token
     def _get_jwt(self):
-        print("refresh token")
+       # enable the token exchange with different azp
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
         payload = {
-            "grant_type" : "refresh_token",
-            "refresh_token": self.refresh_token,
-            "client_id":ConfigClass.MINIO_OPENID_CLIENT,
-        }
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded"
+            "grant_type" : "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": self.access_token.replace("Bearer ", ""),
+            "subject_token_type":"urn:ietf:params:oauth:token-type:access_token",
+            "requested_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
+            "client_id": "minio",
+            "client_secret": ConfigClass.KEYCLOAK_MINIO_SECRET
         }
 
         # use http request to fetch from keycloak
@@ -64,38 +66,6 @@ class Minio_Client_():
         )
 
         return provider
-
-    def copy_object(self, bucket, obj, source_bucket, source_obj):
-        result = self.client.copy_object(
-            bucket,
-            obj,
-            CopySource(source_bucket, source_obj),
-        )
-        return result
-
-    def fput_object(self, bucket_name, object_name, file_path):
-        result = self.client.fput_object(
-            bucket_name,
-            object_name,
-            file_path
-        )
-        return result
-
-
-
-class Minio_Client():
-
-    def __init__(self):
-        # set config
-        # self._config = _config
-
-        # Temperary use the credential
-        self.client = Minio(
-            ConfigClass.MINIO_ENDPOINT, 
-            access_key=ConfigClass.MINIO_ACCESS_KEY,
-            secret_key=ConfigClass.MINIO_SECRET_KEY,
-            secure=ConfigClass.MINIO_HTTPS)
-
 
     def copy_object(self, bucket, obj, source_bucket, source_obj):
         result = self.client.copy_object(

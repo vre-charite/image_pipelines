@@ -1,93 +1,23 @@
 import requests
-import zipfile
-import os
 import subprocess
 import json
 import time
 import psycopg2
 import argparse
 from datetime import datetime
-#from config import config_singleton, set_config, config_factory
 from config import ConfigClass
 import traceback
 import shutil
-from minio_client import Minio_Client, Minio_Client_
+
+from minio_client import Minio_Client_
+from locks import recursive_lock, unlock_resource
 
 TEMP_FOLDER = './dataset/'
 
 
-def get_dataset_url(geid, access_token, refresh_token):
-    # _config = config_singleton()
-    DOWNLOAD_SERVICE = ConfigClass.DOWNLOAD_SERVICE
-
-    dataset_url = "{}/v2/dataset/download/pre".format(DOWNLOAD_SERVICE)
-    payload = {
-        "dataset_geid": geid,
-        "operator": "admin",
-        "session_id": "image_pipeline"
-    }
-    headers = {
-        'Authorization': "Bearer " + access_token,
-        'Refresh-token': refresh_token,
-        'Session-ID': 'image_pipeline'
-    }
-    res = requests.post(dataset_url, headers=headers, json=payload)
-    data = res.json()
-
-    return data['result']['payload']['hash_code']
-
-
-def download_status(hash_code):
-    # _config = config_singleton()
-    DOWNLOAD_SERVICE = ConfigClass.DOWNLOAD_SERVICE
-
-    url = DOWNLOAD_SERVICE + f"/v1/download/status/{hash_code}"
-    res = requests.get(url)
-    res_json = res.json()
-    if res_json.get('code') == 200:
-        status = res_json.get('result').get('status')
-        return status
-    else:
-        logger_info("Error when checking hash_code status")
-
-
-def check_download_preparing_status(hash_code):
-    while True:
-        time.sleep(5)
-        status = download_status(hash_code)
-        logger_info("hash_code status: " + status)
-        if status == 'READY_FOR_DOWNLOADING':
-            break
-    return status
-
-
-def download_and_unzip(url: str, dest_folder: str):
-    filename = "test.zip"
-    file_path = os.path.join(dest_folder, filename)
-    bids_folder = "dataset"
-
-    r = requests.get(url, stream=True)
-    if r.ok:
-        logger_info("saving to", os.path.abspath(file_path))
-        with open(file_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=1024 * 8):
-                if chunk:
-                    f.write(chunk)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-        os.mkdir(bids_folder)
-        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-            zip_ref.extractall(bids_folder)
-
-    else:  # HTTP status code 4XX/5XX
-        logger_info("Download failed: status code {}\n{}".format(
-            r.status_code, r.text))
-
-
 def debug_message_sender(message: str):
-    # _config = config_singleton()
     url = ConfigClass.DATA_OPS_UT + "files/actions/message"
+    print(url)
     response = requests.post(url, json={
         "message": message,
         "channel": "pipelinewatch"
@@ -103,7 +33,7 @@ def logger_info(message: str):
     print(message)
 
 
-def parse_inputs():
+def parse_inputs() -> dict:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -122,8 +52,7 @@ def parse_inputs():
     return arguments
 
 
-def send_message(dataset_geid, bids_output, is_error=False):
-    # config = config_singleton()
+def send_message(dataset_geid, bids_output, is_error=False) -> None:
     queue_url = ConfigClass.QUEUE_SERVICE + "broker/pub"
     post_json = {
         "event_type": "BIDS_VALIDATE_NOTIFICATION",
@@ -143,34 +72,25 @@ def send_message(dataset_geid, bids_output, is_error=False):
     }
 
     if is_error:
-        post_json = {
-            "event_type": "BIDS_VALIDATE_NOTIFICATION",
-            "payload": {
-                "status": "failed",         # INIT/RUNNING/FINISH/ERROR
-                "dataset": dataset_geid,
-                "payload": None,
-                "update_timestamp": time.time(),
-                "error_msg": bids_output
-            },
-            "binary": True,
-            "queue": "socketio",
-            "routing_key": "socketio",
-            "exchange": {
-                "name": "socketio",
-                "type": "fanout"
-            }
-        }
+        post_json["payload"]["status"] = "failed"
+        post_json["payload"]["payload"] = None
+        post_json["payload"]["error_msg"] = bids_output
 
-    queue_res = requests.post(queue_url, json=post_json)
-    if queue_res.status_code != 200:
-        logger_info("code: " + str(queue_res.status_code) +
-                    ": " + queue_res.text)
-    logger_info("sent message to queue")
-    return
+    try:
+        queue_res = requests.post(queue_url, json=post_json)
+        if queue_res.status_code != 200:
+            logger_info("code: " + str(queue_res.status_code) +
+                        ": " + queue_res.text)
+        logger_info("sent message to queue")
+        return
+    except Exception as e:
+        logger_info(f"Failed to send message to queue: {str(e)}")
+        raise
 
 
-def get_files_recursive(dataset_geid, folder_geid=None, all_files=[]):
-    # _config = config_singleton()
+def get_files_recursive(dataset_geid, folder_geid=None, all_files=None) -> list:
+    if all_files is None:
+        all_files = []
 
     query = {
         "page": 0,
@@ -181,76 +101,90 @@ def get_files_recursive(dataset_geid, folder_geid=None, all_files=[]):
     if folder_geid:
         query["folder_geid"] = folder_geid
 
-    resp = requests.get(ConfigClass.DATASET_SERVICE +
-                        "/dataset/{}/files".format(dataset_geid), params=query)
-    for node in resp.json()["result"]['data']:
-        if "File" in node["labels"]:
-            all_files.append(node["location"])
-        else:
-            get_files_recursive(
-                dataset_geid, node['global_entity_id'], all_files=all_files)
-    return all_files
+    try:
+        resp = requests.get(ConfigClass.DATASET_SERVICE +
+                            "/dataset/{}/files".format(dataset_geid), params=query)
+        for node in resp.json()["result"]['data']:
+            if "File" in node["labels"]:
+                all_files.append(node["location"])
+            else:
+                get_files_recursive(
+                    dataset_geid, node['global_entity_id'], all_files=all_files)
+        return all_files
+    except Exception as e:
+        logger_info(f"Error when get files: {str(e)}")
+        raise
 
 
-def download_from_minio(files_locations, auth_token):
-    # _config = config_singleton()
+def download_from_minio(files_locations, auth_token) -> None:
     mc = Minio_Client_(auth_token["at"], auth_token["rt"])
     logger_info("========Minio_Client Initiated========")
 
-    for file_location in files_locations:
-        minio_path = file_location.split("//")[-1]
-        _, bucket, obj_path = tuple(minio_path.split("/", 2))
+    try:
+        for file_location in files_locations:
+            minio_path = file_location.split("//")[-1]
+            _, bucket, obj_path = tuple(minio_path.split("/", 2))
 
-        mc.client.fget_object(bucket, obj_path, TEMP_FOLDER + obj_path)
-    logger_info("========Minio_Client download finished========")
+            mc.client.fget_object(bucket, obj_path, TEMP_FOLDER + obj_path)
+        logger_info("========Minio_Client download finished========")
+
+    except Exception as e:
+        logger_info(f"Error when download data from minio: {str(e)}")
+        raise
 
 
-def getProcessOutput():
+def getProcessOutput() -> None:
     f = open("result.txt", "w")
-    subprocess.run(
-        ['bids-validator', TEMP_FOLDER + 'data', '--json'], universal_newlines=True, stdout=f)
+    try:
+        subprocess.run(
+            ['bids-validator', TEMP_FOLDER + 'data', '--json'], universal_newlines=True, stdout=f)
+    except Exception as e:
+        logger_info(f"BIDS validate fail: {str(e)}")
+        raise
 
 
-def read_result_file():
+def read_result_file() -> str:
     f = open("result.txt", "r")
     output = f.read()
     return output
 
 
 def main():
+    
+    environment = args.get('environment', 'test')
+    logger_info('environment: ' + str(args.get('environment')))
+    logger_info('config set: ' + environment)
+
+    # connect to the postgres database
+    conn = psycopg2.connect(dbname=ConfigClass.POSTGREL_DB, user=ConfigClass.POSTGREL_USER,
+                            password=ConfigClass.POSTGREL_PWD, host=ConfigClass.POSTGREL_HOST)
+    cur = conn.cursor()
+
+    # get arguments
+    dataset_geid = args['dataset_geid']
+    refresh_token = args['refresh_token']
+    access_token = args['access_token']
+
+    logger_info('dataset_geid: {}, access_token: {}, refresh_token: {}'.format(
+        dataset_geid, access_token, refresh_token))
+
+    auth_token = {
+        "at": access_token,
+        "rt": refresh_token
+    }
+
+    locked_node = []
     try:
-        environment = args.get('environment', 'test')
-        # set_config(config_factory(environment))
-        logger_info('environment: ' + str(args.get('environment')))
-        logger_info('config set: ' + environment)
-        # _config = config_singleton(environment)
-
-        DOWNLOAD_SERVICE = ConfigClass.DOWNLOAD_SERVICE
-
-        # connect to the postgres database
-        conn = psycopg2.connect(dbname=ConfigClass.POSTGREL_DB, user=ConfigClass.POSTGREL_USER,
-                                password=ConfigClass.POSTGREL_PWD, host=ConfigClass.POSTGREL_HOST)
-        cur = conn.cursor()
-
-        # get arguments
-        dataset_geid = args['dataset_geid']
-        refresh_token = args['refresh_token']
-        access_token = args['access_token']
-
-        logger_info('dataset_geid: {}, access_token: {}, refresh_token: {}'.format(
-            dataset_geid, access_token, refresh_token))
-
-        auth_token = {
-            "at": access_token,
-            "rt": refresh_token
-        }
-
         files_locations = get_files_recursive(dataset_geid)
+        # here add recursive read lock on the dataset
+        locked_node, err = recursive_lock(dataset_geid)
+        if err: raise err
 
         if len(files_locations) == 0:
             send_message(dataset_geid, 'no files in dataset', True)
             return
         download_from_minio(files_locations, auth_token)
+        logger_info("files are downloaded from minio")
 
         getProcessOutput()
         result = read_result_file()
@@ -270,8 +204,8 @@ def main():
 
         cur.execute(
             """
-            SELECT * 
-            FROM indoc_vre.bids_results b 
+            SELECT *
+            FROM indoc_vre.bids_results b
             WHERE b.dataset_geid = %s;
             """,
             [dataset_geid, ]
@@ -279,6 +213,8 @@ def main():
         record = cur.fetchone()
 
         current_time = datetime.utcfromtimestamp(time.time())
+
+        # check whether the postgres database contains the record befor or not
         if not record:
             cur.execute(
                 """
@@ -306,7 +242,12 @@ def main():
         send_message(dataset_geid, bids_output)
 
     except Exception as e:
+        logger_info(f"BIDs validator failed due to: {str(e)}")
         raise
+    
+    finally:
+        for resource_key, operation in locked_node:
+            unlock_resource(resource_key, operation)
 
 
 if __name__ == "__main__":

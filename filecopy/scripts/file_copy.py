@@ -1,63 +1,106 @@
-from config import config_singleton, set_config, config_factory
-import os
 import argparse
 import time
-import requests
 import traceback
-from minio_client import Minio_Client, Minio_Client_
+from pathlib import Path
+from typing import Any
+from typing import Dict
+
+import requests
+
+from config import ConfigClass
+from minio_client import Minio_Client_
+from models import append_suffix_to_filepath
+from models import get_timestamp
+from neo4j_helper import Neo4jPathCheck
+from services.approval.client import ApprovalEntityClient
+from services.approval.models import CopyStatus
+from utils import get_session_id
+from utils import lock_resource
+from utils import logger_info
+from utils import unlock_resource
+from utils import update_job
 
 
 def main():
+    environment = args.get('environment', 'test')
+    logger_info('environment: ' + str(args.get('environment')))
+    logger_info('config set: ' + environment)
+    project_code = args['project_code']
+    output_path = args['output_path']
+    output_bucket = f'core-{project_code}'
+    input_path = args['input_path']
+    input_bucket = f'gr-{project_code}'
+    job_id = args['job_id']
+    session_id = get_session_id(job_id)
+    request_id = args['request_id']
+    minio_token = {
+        'at': args['access_token'],
+        'rt': args['refresh_token'],
+    }
+    copy_start_timestamp = get_timestamp()
+
+    logger_info(f'Running file-copy with arguments: {args}')
+    logger_info(f'Config environment: {ConfigClass.env}')
+    logger_info(f'Using output bucket: {output_bucket}')
+    logger_info(f'Using input bucket: {input_bucket}')
+    logger_info(f'Starting to copy file: {input_path}')
+
+    source_check = Neo4jPathCheck('Greenroom')
+    input_node = source_check.get_file(project_code, f'{input_bucket}/{input_path}')
+    if not input_node:
+        raise ValueError(f'Input file "{input_path}" is not found in the database')
+
+    approval_entity_client = None
+    approval_entity = None
+
+    if request_id:
+        approval_entity_client = ApprovalEntityClient()
+        approved_entities = approval_entity_client.get_approved_entities(request_id)
+        try:
+            approval_entity = approved_entities[input_node.geid]
+        except KeyError:
+            raise ValueError(
+                f'Input file "{input_path}" is not listed in approved entities for the request "{request_id}"'
+            )
+
+    destination_filepath = f'{output_bucket}/{output_path}'
+    destination_check = Neo4jPathCheck('VRECore')
+
+    destination_folder = destination_check.get_folder(project_code, str(Path(output_path).parent))
+    if (not destination_folder) or destination_folder.is_archived:
+        raise ValueError('Destination folder does no longer exist or already in trash bin')
+
+    is_file_exists = destination_check.is_file_exists(project_code, destination_filepath)
+
+    if is_file_exists:
+        logger_info(f'File {output_path} already exists at destination')
+        output_path = append_suffix_to_filepath(output_path, copy_start_timestamp)
+        logger_info(f'Using new filename {output_path}')
+
+    # lock the source as read lock, destination as write
+    lock_resource("%s/%s" % (input_bucket, input_path), "read")
+    lock_resource("%s/%s" % (output_bucket, output_path), "write")
+
     try:
-        environment = args.get('environment', 'test')
-        set_config(config_factory(environment))
-        logger_info('environment: ' + str(args.get('environment')))
-        logger_info('config set: ' + environment)
-        _config = config_singleton(environment)
-        project_code = args['project_code']
-        output_path = args['output_path']
-        output_bucket = "core-" + project_code
-        input_path = args['input_path']
-        input_bucket = "gr-" + project_code
-        operator = args['operator']
-        job_id = args['job_id']
-        # add new variable for the minio token
-        token = {
-            "at": args['access_token'],
-            "rt": args['refresh_token']
-        }
-
-        logger_info('all varible: ' + str(args))
-        logger_info('project_code: ' + project_code)
-        logger_info('_config environment: ' + str(_config.env))
-        logger_info('output_bucket: ' + output_bucket)
-        logger_info('input_bucket: ' + input_bucket)
-        logger_info('operator: ' + operator)
-        logger_info('job_id: ' + job_id)
-
-        # check if the input path is directory
-        is_directory = False
-        if is_directory:
-            logger_info("Do not support copy as a folder")
-            raise(Exception("[Invalid operation] input is a folder"))
-        else:
-            logger_info(f'starting to copy file: {input_path}')
-
         # copy minio object
-        result = copy_object_single_file(
-            output_bucket, output_path, input_bucket, input_path, token)
-        
-        update_job(job_id, 'RUNNING', result)
+        result = copy_object_single_file(output_bucket, output_path, input_bucket, input_path, minio_token)
+        if is_file_exists:
+            result['output_path'] = output_path
+    finally:
+        # unlock it after upload
+        unlock_resource("%s/%s" % (input_bucket, input_path), "read")
+        unlock_resource("%s/%s" % (output_bucket, output_path), "write")
 
-        logger_info(
-            f'Successfully copied file from {input_path} to {output_path}')
-    except Exception as e:
-        raise
+    if approval_entity_client and approval_entity:
+        approval_entity_client.update_copy_status(approval_entity, CopyStatus.COPIED)
+
+    update_job(session_id, job_id, 'RUNNING', result)
+
+    logger_info(f'Successfully copied file from {input_bucket}/{input_path} to {output_bucket}/{output_path}')
 
 
 def debug_message_sender(message: str):
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + "files/actions/message"
+    url = ConfigClass.DATA_OPS_UT + "files/actions/message"
     response = requests.post(url, json={
         "message": message,
         "channel": "pipelinewatch"
@@ -65,11 +108,6 @@ def debug_message_sender(message: str):
     if response.status_code != 200:
         print("code: " + str(response.status_code) + ": " + response.text)
     return
-
-
-def logger_info(message: str):
-    debug_message_sender(message)
-    print(message)
 
 
 def parse_inputs():
@@ -89,7 +127,7 @@ def parse_inputs():
                         help='Action operator', required=True)
     parser.add_argument('-j', '--job-id',
                         help='Job geid', required=True)
-
+    parser.add_argument('-rid', '--request-id', help='Approval request id')
     parser.add_argument('-at', '--access-token',
                         help='access key', required=True)
     parser.add_argument('-rt', '--refresh-token',
@@ -99,23 +137,14 @@ def parse_inputs():
     return arguments
 
 
-def recursively_get_paths(folder):
-    paths = []
-    for path, subdirs, files in os.walk(folder):
-        for name in files:
-            full_path = os.path.join(path, name)
-            paths.append(full_path)
-    return paths
-
-
-def copy_object_single_file(bucket, object_name: str, source_bucket, source_object_name: str,
-    auth_token: dict):
+def copy_object_single_file(
+    bucket, object_name: str, source_bucket, source_object_name: str, auth_token: Dict[str, Any]
+) -> Dict[str, Any]:
     logger_info("[Copying source] {}::{}".format(source_bucket, source_object_name))
     logger_info("[Copying destination] {}::{}".format(bucket, object_name))
     try:
-        _config = config_singleton()
         # get size
-        mc = Minio_Client_(_config, auth_token["at"], auth_token["rt"])
+        mc = Minio_Client_(auth_token["at"], auth_token["rt"])
         logger_info("========Minio_Client Initiated========")
         file_size_gb = mc.client.stat_object(source_bucket, source_object_name).size
         versioning = None
@@ -123,14 +152,12 @@ def copy_object_single_file(bucket, object_name: str, source_bucket, source_obje
             logger_info("File size less than 5GiB")
             # move minio file objects
             # copy an object from a bucket to another.
-            result = mc.copy_object(
-                bucket, object_name, source_bucket, source_object_name)
+            result = mc.copy_object(bucket, object_name, source_bucket, source_object_name)
             versioning = result.version_id
         else:
             logger_info("File size greater than 5GiB")
-            temp_path = _config.TEMP_DIR + str(time.time())
-            file_get = mc.client.fget_object(
-                source_bucket, source_object_name, temp_path)
+            temp_path = ConfigClass.TEMP_DIR + str(time.time())
+            file_get = mc.client.fget_object(source_bucket, source_object_name, temp_path)
             logger_info("File fetched to local disk: {}".format(temp_path))
             result = mc.fput_object(bucket, object_name, temp_path)
             versioning = result.version_id
@@ -143,17 +170,6 @@ def copy_object_single_file(bucket, object_name: str, source_bucket, source_obje
         logger_info("[Fatal While Minio Copy] " + str(e))
         raise
 
-def update_job(job_id, status, add_payload={}, progress=0):
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + "tasks"
-    response = requests.put(url, json={
-        "session_id": "*",
-        "job_id": job_id,
-        "status": status,
-        "add_payload": add_payload,
-        "progress": progress
-    })
-    logger_info(str(response.text))
 
 if __name__ == "__main__":
     try:

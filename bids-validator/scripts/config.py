@@ -27,38 +27,29 @@ def vault_factory(config_center) -> dict:
 class Settings(BaseSettings):
     port: int = 5081
     host: str = "127.0.0.1"
+    env: str = ""
+    namespace: str = ""
 
     MINIO_OPENID_CLIENT: str = ""
     MINIO_ENDPOINT: str = ""
     MINIO_HTTPS: str = ""
     KEYCLOAK_URL: str = ""
-    MINIO_TEST_PASS: str = ""
-    MINIO_ACCESS_KEY: str = ""
-    MINIO_SECRET_KEY: str = ""
+    KEYCLOAK_MINIO_SECRET: str 
 
-    # disk mounts
-    NFS_ROOT_PATH = "/data/vre-storage"
-    VRE_ROOT_PATH = "/vre-data"
-    # download secret
-    GM_PASSWORD: str = ""
-    DOWNLOAD_TOKEN_EXPIRE_AT = 5
     # temp path
     TEMP_DIR = ""
     DATA_OPS_UTIL: str = ""
-    # Redis Service
-    REDIS_HOST: str = ""
-    REDIS_PORT: str = ""
-    REDIS_DB: str = ""
-    REDIS_PASSWORD: str = ""
+    DATA_OPS_UT_V2: str = ""
 
     DATASET_SERVICE: str = ""
-    DOWNLOAD_SERVICE_VRE: str = ""
     QUEUE_SERVICE: str = ""
 
     RDS_DBNAME: str = ""
     RDS_HOST: str = ""
     RDS_USER: str = ""
     RDS_PWD: str = ""
+
+    NEO4J_SERVICE: str = ""
 
     class Config:
         env_file = '.env'
@@ -91,36 +82,23 @@ class ConfigClass(object):
     settings = get_settings()
 
     version = "0.2.0"
-    disk_namespace = os.environ.get('namespace')
+    disk_namespace = settings.namespace
 
     MINIO_OPENID_CLIENT = settings.MINIO_OPENID_CLIENT
     MINIO_ENDPOINT = settings.MINIO_ENDPOINT
     MINIO_HTTPS = (settings.MINIO_HTTPS == "True")
     KEYCLOAK_URL = settings.KEYCLOAK_URL
-    MINIO_TEST_PASS = settings.MINIO_TEST_PASS
-    MINIO_ACCESS_KEY = settings.MINIO_ACCESS_KEY
-    MINIO_SECRET_KEY = settings.MINIO_SECRET_KEY
+    KEYCLOAK_MINIO_SECRET = settings.KEYCLOAK_MINIO_SECRET
 
-    # disk mounts
-    NFS_ROOT_PATH = settings.NFS_ROOT_PATH
-    VRE_ROOT_PATH = settings.VRE_ROOT_PATH
-    # download secret
-    DOWNLOAD_KEY = settings.GM_PASSWORD
-    DOWNLOAD_TOKEN_EXPIRE_AT = settings.DOWNLOAD_TOKEN_EXPIRE_AT
-    # temp path
-    TEMP_DIR = settings.TEMP_DIR
     DATA_OPS_UT = f"{settings.DATA_OPS_UTIL}/v1/"
-    # Redis Service
-    REDIS_HOST = settings.REDIS_HOST
-    REDIS_PORT = int(settings.REDIS_PORT)
-    REDIS_DB = int(settings.REDIS_DB)
-    REDIS_PASSWORD = settings.REDIS_PASSWORD
-
+    DATA_OPS_UT_V2 = f"{settings.DATA_OPS_UTIL}/v2/"
     DATASET_SERVICE = f"{settings.DATASET_SERVICE}/v1"
-    DOWNLOAD_SERVICE = settings.DOWNLOAD_SERVICE_VRE
     QUEUE_SERVICE = f"{settings.QUEUE_SERVICE}/v1/"
 
     POSTGREL_DB = settings.RDS_DBNAME
     POSTGREL_HOST = settings.RDS_HOST
     POSTGREL_USER = settings.RDS_USER
     POSTGREL_PWD = settings.RDS_PWD
+
+    NEO4J_SERVICE = settings.NEO4J_SERVICE + "/v1/neo4j/"
+    NEO4J_SERVICE_V2 = settings.NEO4J_SERVICE + "/v2/neo4j/"

@@ -1,12 +1,9 @@
 FROM python:3.7-buster
 LABEL maintainer="Samantha Zhang <szhang@indocresearch.org>"
-USER root
 
-# RUN sed 's/main$/main universe/' -i /etc/apt/sources.list 
 RUN apt-get update -y && apt-get install -y rsync python3-pip python3-dev build-essential \
-    default-jre-headless locales
+    default-jre-headless locales && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --upgrade pip
-
 COPY ./ /datacopy
 WORKDIR /datacopy
 RUN chmod 555 -R /datacopy

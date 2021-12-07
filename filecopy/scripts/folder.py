@@ -2,7 +2,7 @@ import os
 from typing import List
 import requests
 from utils import fetch_geid
-from config import config_singleton
+from config import ConfigClass
 from functools import partial
 
 
@@ -155,7 +155,6 @@ class FolderNode:
         return self.exist
 
     def save(self, override=False):
-        ConfigClass = config_singleton()
         '''
         save in database
         '''
@@ -268,7 +267,6 @@ def get_zone(namespace: str):
 
 
 def http_query_node(namespace, query_params={}):
-    ConfigClass = config_singleton()
     payload = {
         **query_params
     }
@@ -278,7 +276,6 @@ def http_query_node(namespace, query_params={}):
 
 
 def http_query_node_zone(namespace, query_params={}, extra_labels=[]):
-    ConfigClass = config_singleton()
     if namespace.lower() in ['vrecore', 'greenroom']:
         zone = {'vrecore': 'VRECore',
                 'greenroom': 'Greenroom'}.get(namespace.lower())

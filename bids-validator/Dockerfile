@@ -1,10 +1,8 @@
 FROM python:3.7-buster
 LABEL maintainer="Samantha Zhang <szhang@indocresearch.org>"
-USER root
 
-# RUN sed 's/main$/main universe/' -i /etc/apt/sources.list 
 RUN apt-get update -y && apt-get install -y rsync python3-pip python3-dev build-essential \
-    default-jre-headless locales nodejs npm
+    default-jre-headless locales nodejs npm && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --upgrade pip
 RUN npm install -g bids-validator@1.8.0
 COPY ./ /dataset-validate

@@ -1,23 +1,27 @@
-from config import config_singleton, set_config, config_factory
-import os 
 import argparse
-import time
-import requests
-import traceback
+import os
 import re
-from minio_client import Minio_Client, Minio_Client_
+import traceback
+
+import requests
+
+from config import ConfigClass
+from minio_client import Minio_Client_
+from utils import lock_resource
+from utils import unlock_resource
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser(
-        description = __doc__,
-        formatter_class = argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('-i', '--input-path', help='Sepecify input file', 
-        metavar='FILE/Folder', required=True)
-    parser.add_argument('-o', '--output-path', help='Sepecify output file', 
-        metavar='PATH', required=True)
-    parser.add_argument('-t', '--trash-path', help='Trash folder path', 
-        metavar='PATH', required=True)
+    parser.add_argument('-i', '--input-path', help='Sepecify input file',
+                        metavar='FILE/Folder', required=True)
+    parser.add_argument('-o', '--output-path', help='Sepecify output file',
+                        metavar='PATH', required=True)
+    parser.add_argument('-t', '--trash-path', help='Trash folder path',
+                        metavar='PATH')
     parser.add_argument('-j', '--job-id',
                         help='Job geid', required=True)
     parser.add_argument('-env', '--environment',
@@ -26,7 +30,6 @@ def parse_inputs():
                         help='Project code', required=True)
     parser.add_argument('-op', '--operator',
                         help='Action operator', required=True)
-
     parser.add_argument('-at', '--access-token',
                         help='access key', required=True)
     parser.add_argument('-rt', '--refresh-token',
@@ -35,9 +38,9 @@ def parse_inputs():
     arguments = vars(parser.parse_args())
     return arguments
 
+
 def debug_message_sender(message: str):
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + "files/actions/message"
+    url = ConfigClass.DATA_OPS_UT + "files/actions/message"
     response = requests.post(url, json={
         "message": message,
         "channel": "pipelinewatch"
@@ -52,12 +55,11 @@ def logger_info(message: str):
     print(message)
 
 
-def delete_object_single_file(source_bucket, source_object_name: str, auth_token:dict, version=None):
+def delete_object_single_file(source_bucket, source_object_name: str, auth_token: dict, version=None):
     logger_info("[Deleting source] {}::{}".format(source_bucket, source_object_name))
     try:
-        _config = config_singleton()
         # get size
-        mc = Minio_Client_(_config, auth_token["at"], auth_token["rt"])
+        mc = Minio_Client_(auth_token["at"], auth_token["rt"])
         logger_info("========Minio_Client Initiated========")
         # move minio file objects
         # copy an object from a bucket to another.
@@ -67,48 +69,54 @@ def delete_object_single_file(source_bucket, source_object_name: str, auth_token
         logger_info("[Fatal While Minio Copy] " + str(e))
         raise
 
+
 def location_decoder(location: str):
-    '''
-    decode resource location
+    """Decode resource location.
+
     return ingestion_type, ingestion_host, ingestion_path
-    '''
+    """
+
     splits_loaction = location.split("://", 1)
     ingestion_type = splits_loaction[0]
     ingestion_url = splits_loaction[1]
-    path_splits =  re.split(r"(?<!/)/(?!/)", ingestion_url, 1)
+    path_splits = re.split(r"(?<!/)/(?!/)", ingestion_url, 1)
     ingestion_host = path_splits[0]
     ingestion_path = path_splits[1]
     return ingestion_type, ingestion_host, ingestion_path
 
+
 def main():
+    environment = args.get('environment', 'test')
+    logger_info('environment: ' + str(args.get('environment')))
+    logger_info('config set: ' + environment)
+    logger_info('_config environment: ' + str(ConfigClass.env))
+    output_file = args['output_path']
+    output_path = os.path.dirname(output_file)
+    logger_info(f'file path is: {output_path}')
+    input_path = args['input_path']
+    minio_token = {
+        'at': args['access_token'],
+        'rt': args['refresh_token']
+    }
+
+    ingestion_type, ingestion_host, ingestion_path = location_decoder(input_path)
+    splits_ingestion = ingestion_path.split("/", 1)
+    source_bucket_name = splits_ingestion[0]
+    source_object_name = splits_ingestion[1]
+
+    lock_resource("%s/%s" % (source_bucket_name, source_object_name), "write")
+
     try:
-        environment = args.get('environment', 'test')
-        set_config(config_factory(environment))
-        logger_info('environment: ' + str(args.get('environment')))
-        logger_info('config set: ' + environment)
-        _config = config_singleton(environment)
-        logger_info('_config environment: ' + str(_config.env))
-        output_file = args['output_path']
-        output_path = os.path.dirname(output_file)
-        logger_info(f'file path is: {output_path}')
-        input_path = args['input_path']
-        trash_path = args['trash_path']
-        # add new variable for the minio token
-        token = {
-            "at": args['access_token'],
-            "rt": args['refresh_token']
-        }
-        
-        ingestion_type, ingestion_host, ingestion_path = location_decoder(
-            input_path)
-        splits_ingestion = ingestion_path.split("/", 1)
-        source_bucket_name = splits_ingestion[0]
-        source_object_name = splits_ingestion[1]
-        delete_object_single_file(source_bucket_name, source_object_name, token)
-        logger_info(f'Successfully moved file from {input_path} to {output_file}')
+        delete_object_single_file(source_bucket_name, source_object_name, minio_token)
     except Exception as e:
         logger_info(f'Failed to move file from {input_path} to {output_file}\n {e}')
-        raise
+        raise e
+    finally:
+        # unlock it after upload
+        unlock_resource("%s/%s" % (source_bucket_name, source_object_name), "write")
+
+    logger_info(f'Successfully moved file from {input_path} to {output_file}')
+
 
 if __name__ == "__main__":
     try:
@@ -119,4 +127,3 @@ if __name__ == "__main__":
         for info in traceback.format_stack():
             logger_info(info)
         raise
-

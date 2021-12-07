@@ -1,105 +1,16 @@
-import requests
 import time
-# from app.resources.error_handler import APIException
-# from app.models.base_models import EAPIResponseCode
+from pathlib import Path
+from typing import Any
+from typing import Dict
+from typing import Optional
+from typing import Tuple
 
-# from ..commons.logger_services.logger_factory_service import SrvLoggerFactory
-from minio_client import Minio_Client_
+import requests
+from requests import Response
 
-from config import config_singleton
-
-ConfigClass = config_singleton()
-
-def create_relation(label, payload):
-    try:
-        response = requests.post(ConfigClass.NEO4J_SERVICE + "relations/own", json=payload)
-        if response.status_code != 200:
-            raise APIException(
-                error_msg=f"Error calling neo4j node API: {response.json()}", 
-                status_code=response.status_code
-            )
-    except Exception as e:
-        raise APIException(
-            error_msg=f"Error calling neo4j node API: {str(e)}", 
-            status_code=EAPIResponseCode.internal_error.value
-        )
-    return response.json()
-
-def create_node(label, payload):
-    try:
-        response = requests.post(ConfigClass.NEO4J_SERVICE + f"nodes/{label}", json=payload)
-        if response.status_code != 200:
-            raise APIException(
-                error_msg=f"Error calling neo4j node API: {response.json()}", 
-                status_code=response.status_code
-            )
-        created_node = response.json()[0]
-    except Exception as e:
-        raise APIException(
-            error_msg=f"Error calling neo4j node API: {str(e)}", 
-            status_code=EAPIResponseCode.internal_error.value
-        )
-    return created_node
-
-
-def query_relation(relation_label, start_label, end_label, start_params={}, end_params={}):
-    payload = {
-        "label": relation_label,
-        "start_label": start_label,
-        "start_params": start_params,
-        "end_label": end_label,
-        "end_params": end_params,
-    }
-    try:
-        response = requests.post(ConfigClass.NEO4J_SERVICE + "relations/query", json=payload)
-        if response.status_code != 200:
-            raise APIException(
-                error_msg=f"Error calling neo4j relation query API: {response.json()}", 
-                status_code=response.status_code
-            )
-    except Exception as e:
-        raise APIException(
-            error_msg=f"Error calling neo4j relation query API: {str(e)}", 
-            status_code=EAPIResponseCode.internal_error.value
-        )
-    return response.json()
-
-def get_node_by_geid(geid, label: str = None):
-    try:
-        response = None
-        # since we have new api to directly fetch by label
-        if label:
-            payload = {
-                'global_entity_id': geid,
-            }
-            node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/%s/query"%(label)
-            response = requests.post(node_query_url, json=payload)
-        else:
-            node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/geid/%s"%(geid)
-            response = requests.get(node_query_url)
-
-        # here if we dont find any node then return None
-        if len(response.json()) == 0:
-            return None
-
-        return response.json()[0]
-    except Exception as e:
-        raise APIException(f"Error calling neo4j API: {str(e)}", EAPIResponseCode.internal_error.value)
-
-
-def get_parent_node(current_node):
-    # here we have to find the parent node and delete the relationship
-    relation_query_url = ConfigClass.NEO4J_SERVICE + "relations/query"
-    query_payload = {
-        "label": "own",
-        "end_label": current_node.get("labels")[0],
-        "end_params": {"id":current_node.get("id")}
-    }
-    response = requests.post(relation_query_url, json=query_payload)
-    # print(response.json()[0])
-    parent_node_id = response.json()[0].get("start_node")
-
-    return parent_node_id
+from config import ConfigClass
+from models import Node
+from models import ResourceType
 
 
 def get_children_nodes(start_geid):
@@ -117,43 +28,30 @@ def get_children_nodes(start_geid):
     return ffs
 
 
-def delete_relation_bw_nodes(start_id, end_id):
-    # then delete the relationship between all the fils
-    relation_delete_url = ConfigClass.NEO4J_SERVICE + "relations"
-    delete_params = {
-        "start_id": start_id,
-        "end_id": end_id,
-    }
-    response = requests.delete(relation_delete_url, params=delete_params)
-    return response
+def create_file_node(
+    project,
+    source_file,
+    operator,
+    parent_id,
+    relative_path,
+    minio_client,
+    tags=None,
+    attribute=None,
+    new_name=None,
+    extra_labels=None,
+    extra_fields=None,
+) -> Tuple[Node, Response, str]:
+    if tags is None:
+        tags = []
 
+    if attribute is None:
+        attribute = {}
 
-def delete_node(target_node, minio_client):
+    if extra_labels is None:
+        extra_labels = ['VRECore']
 
-    node_label = target_node.get('labels')[0]
-    node_id = target_node.get('id')
-    node_delete_url = ConfigClass.NEO4J_SERVICE + "nodes/%s/node/%s"%(node_label, node_id)
-    response = requests.delete(node_delete_url)
-
-    # delete the file in minio if it is the file
-    if node_label == "File":
-        try:
-            # mc = Minio_Client_(ConfigClass, access_token, refresh_token)
-
-            # minio location is minio://http://<end_point>/bucket/user/object_path
-            minio_path = target_node.get('location').split("//")[-1]
-            _, bucket, obj_path = tuple(minio_path.split("/", 2))
-
-            minio_client.delete_object(bucket, obj_path)
-            print("Minio %s/%s Delete Success"%(bucket, obj_path))
-
-        except Exception as e:
-            print("error when deleting: "+str(e))
-
-
-def create_file_node(project, source_file, operator, parent_id, relative_path, \
-    minio_client, tags=[], attribute={}, new_name=None, \
-    extra_labels=["VRECore"], extra_fields={}):
+    if extra_fields is None:
+        extra_fields = {}
 
     # fecth the geid from common service
     geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
@@ -178,6 +76,7 @@ def create_file_node(project, source_file, operator, parent_id, relative_path, \
         "display_path": fuf_path,
         "archived": False,
         "list_priority": 20,
+        "generate_id": source_file.get("generate_id", None),
         **extra_fields
     }
 
@@ -188,24 +87,24 @@ def create_file_node(project, source_file, operator, parent_id, relative_path, \
         file_attribute.update(attribute)
 
     new_file_node, new_relation = create_node_with_parent("File", file_attribute, parent_id)
-
+    version_id = None
     # make minio copy
     try:
-        # mc = Minio_Client_(ConfigClass, access_token, refresh_token)
         # minio location is minio://http://<end_point>/bucket/user/object_path
         src_minio_path = source_file.get('location').split("//")[-1]
         _, src_bucket, src_obj_path = tuple(src_minio_path.split("/", 2))
         target_minio_path = location.split("//")[-1]
         _, target_bucket, target_obj_path = tuple(target_minio_path.split("/", 2))
 
+        # here the minio api only accept the 5GB in copy. if >5GB we need to download
+        # to local then reupload to target
         file_size_gb = minio_client.client.stat_object(src_bucket, src_obj_path).size
-        versioning = None
         if file_size_gb < 5e+9:
             print("File size less than 5GiB")
             # move minio file objects
             # copy an object from a bucket to another.
             result = minio_client.copy_object(target_bucket, target_obj_path, src_bucket, src_obj_path)
-            versioning = result.version_id
+            version_id = result.version_id
         else:
             print("File size greater than 5GiB")
             temp_path = ConfigClass.TEMP_DIR + str(time.time())
@@ -213,23 +112,42 @@ def create_file_node(project, source_file, operator, parent_id, relative_path, \
                 src_bucket, src_obj_path, temp_path)
             print("File fetched to local disk: {}".format(temp_path))
             result = minio_client.fput_object(target_bucket, target_obj_path, temp_path)
-            versioning = result.version_id
-            print("File uploaded : {}".format(target_obj_path))
+            version_id = result.version_id
 
-        # minio_client.copy_object(target_bucket, target_obj_path, src_bucket, src_obj_path)
         print("Minio Copy %s/%s Success"%(src_bucket, src_obj_path))
     except Exception as e:
         print("error when uploading: "+str(e))
 
-    return new_file_node, new_relation
+    return new_file_node, new_relation, version_id
 
 
 # some level of refactory needed here
 # for us the deletion just archive the neo4j node
 # but delete the minio object
-def archived_file_node(project, source_file, operator, parent_id, relative_path, \
-    minio_client, tags=[], attribute={}, new_name=None, extra_labels=["VRECore"], \
-    extra_fields={}):
+def archived_file_node(
+    project,
+    source_file,
+    operator,
+    parent_id,
+    relative_path,
+    minio_client,
+    tags=None,
+    attribute=None,
+    new_name=None,
+    extra_labels=None,
+    extra_fields=None,
+) -> Tuple[Node, Response]:
+    if tags is None:
+        tags = []
+
+    if attribute is None:
+        attribute = {}
+
+    if extra_labels is None:
+        extra_labels = ['VRECore']
+
+    if extra_fields is None:
+        extra_fields = {}
 
     # fecth the geid from common service
     geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
@@ -282,11 +200,30 @@ def archived_file_node(project, source_file, operator, parent_id, relative_path,
     return new_file_node, new_relation
 
 
-def create_folder_node(dataset_code, source_folder, operator, parent_node, 
-    relative_path, tags=[], new_name=None, extra_labels=["VRECore"], extra_fields={}):
-    # fecth the geid from common service
-    geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
-    folder_name = new_name if new_name else source_folder.get("name")
+def create_folder_node(
+    dataset_code,
+    source_folder,
+    operator,
+    parent_node,
+    relative_path,
+    tags=None,
+    new_name=None,
+    extra_labels=None,
+    extra_fields=None,
+) -> Tuple[Node, Response]:
+    if tags is None:
+        tags = []
+
+    if extra_labels is None:
+        extra_labels = ['VRECore']
+
+    if extra_fields is None:
+        extra_fields = {}
+
+    geid = requests.get(ConfigClass.COMMON_SERVICE + "utility/id").json().get("result")
+    folder_name = source_folder.get("name")
+    if new_name is not None:
+        folder_name = new_name
 
     # then copy the node under the dataset
     folder_attribute = {
@@ -295,8 +232,8 @@ def create_folder_node(dataset_code, source_folder, operator, parent_node,
         "name": folder_name,
         "global_entity_id": geid,
         "folder_relative_path": relative_path,
-        "display_path": relative_path+"/"+folder_name,
-        "folder_level": parent_node.get("folder_level", -1)+1,
+        "display_path": relative_path + "/" + folder_name,
+        "folder_level": parent_node.get("folder_level", -1) + 1,
         "project_code": dataset_code,
         "tags": tags,
         "archived": False,
@@ -309,10 +246,9 @@ def create_folder_node(dataset_code, source_folder, operator, parent_node,
     return folder_node, relation
 
 
-
 # this function will help to create a target node
 # and connect to parent with "own" relationship
-def create_node_with_parent(node_label, node_property, parent_id):
+def create_node_with_parent(node_label, node_property, parent_id) -> Tuple[Node, Response]:
     # create the node with following attribute
     # - global_entity_id: unique identifier
     # - create_by: who import the files
@@ -326,6 +262,84 @@ def create_node_with_parent(node_label, node_property, parent_id):
     # now create the relationship
     # the parent can be two possible: 1.dataset 2.folder under it
     create_node_url = ConfigClass.NEO4J_SERVICE + 'relations/own'
-    new_relation = requests.post(create_node_url, json={"start_id":parent_id, "end_id":new_node.get("id")})
+    new_relation = requests.post(create_node_url, json={"start_id": parent_id, "end_id": new_node.get("id")})
 
-    return new_node, new_relation
+    return Node(new_node), new_relation
+
+
+class Neo4jPathCheck:
+
+    def __init__(self, zone: str) -> None:
+        self.zone = zone
+        self.minio_url = ('https://' if ConfigClass.MINIO_HTTPS else 'http://') + ConfigClass.MINIO_ENDPOINT
+
+    def _get_node(self, payload: Dict[str, Any]) -> Optional[Node]:
+        url = f'{ConfigClass.NEO4J_SERVICE_V2}nodes/query'
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            result = response.json()['result']
+            if len(result) > 0:
+                return Node(result[0])
+
+        return None
+
+    def is_file_exists(self, project_code: str, path: str) -> bool:
+        """Check if file already exists at specified path."""
+
+        node = self.get_file(project_code, path)
+
+        return bool(node)
+
+    def is_folder_exists(self, project_code: str, path: str) -> bool:
+        """Check if folder already exists within project at specified path."""
+
+        node = self.get_folder(project_code, path)
+
+        return bool(node)
+
+    def get_file(self, project_code: str, path: str) -> Optional[Node]:
+        """Return file that exists within project at specified path or None."""
+
+        location = f'minio://{self.minio_url}/{path}'
+
+        payload = {
+            'page': 0,
+            'page_size': 1,
+            'partial': False,
+            'order_by': 'global_entity_id',
+            'order_type': 'desc',
+            'query': {
+                'project_code': project_code,
+                'location': location,
+                'labels': [self.zone, ResourceType.FILE],
+                'archived': False,
+            }
+        }
+
+        return self._get_node(payload)
+
+    def get_folder(self, project_code: str, path: str) -> Optional[Node]:
+        """Return folder that exists within project at specified path or None."""
+
+        folder_path = Path(path)
+
+        folder_relative_path = str(folder_path.parent)
+        if folder_relative_path == '.':
+            folder_relative_path = ''
+
+        payload = {
+            'page': 0,
+            'page_size': 1,
+            'partial': False,
+            'order_by': 'global_entity_id',
+            'order_type': 'desc',
+            'query': {
+                'project_code': project_code,
+                'folder_relative_path': folder_relative_path,
+                'name': folder_path.name,
+                'labels': [self.zone, ResourceType.FOLDER],
+                'archived': False,
+            }
+        }
+
+        return self._get_node(payload)
