@@ -16,4 +16,5 @@ class TestApprovalEntity:
             review_status=random.choice(list(ReviewStatus)),
             parent_geid=faker.uuid4(),
             copy_status=random.choice(list(CopyStatus)),
+            name=faker.word(),
         )

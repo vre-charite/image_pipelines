@@ -7,8 +7,8 @@ from sqlalchemy import String
 from sqlalchemy import Table
 from sqlalchemy.future import create_engine
 
-from services.approval.client import ApprovalEntityClient
-from services.approval.models import ApprovedEntities
+from services.approval.client import ApprovalServiceClient
+from services.approval.models import ApprovalEntities
 
 
 @pytest.fixture
@@ -28,6 +28,15 @@ def metadata(inmemory_engine):
         Column('entity_type', String()),
         Column('review_status', String()),
     )
+    Table(
+        'approval_request',
+        metadata,
+        Column('id', String(), unique=True, primary_key=True, default=uuid4),
+        Column('destination_geid', String()),
+        Column('source_geid', String()),
+        Column('destination_path', String()),
+        Column('source_path', String()),
+    )
     metadata.create_all(inmemory_engine)
 
     with inmemory_engine.connect() as connection:
@@ -38,14 +47,14 @@ def metadata(inmemory_engine):
 
 
 @pytest.fixture
-def approval_entity_client(inmemory_engine, metadata):
-    yield ApprovalEntityClient(inmemory_engine, metadata)
+def approval_service_client(inmemory_engine, metadata):
+    yield ApprovalServiceClient(inmemory_engine, metadata)
 
 
-class TestApprovalEntityClient:
-    def test_get_approved_entities_returns_instance_of_approved_entities(self, approval_entity_client, faker):
+class TestApprovalServiceClient:
+    def test_get_approval_entities_returns_instance_of_approval_entities(self, approval_service_client, faker):
         request_id = faker.uuid4()
 
-        result = approval_entity_client.get_approved_entities(request_id)
+        result = approval_service_client.get_approval_entities(request_id)
 
-        assert isinstance(result, ApprovedEntities)
+        assert isinstance(result, ApprovalEntities)

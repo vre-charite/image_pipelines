@@ -21,8 +21,8 @@ from neo4j_helper import create_file_node
 from neo4j_helper import create_folder_node
 from neo4j_helper import get_children_nodes
 from neo4j_helper import Neo4jPathCheck
-from services.approval.client import ApprovalEntityClient
-from services.approval.models import ApprovedEntities
+from services.approval.client import ApprovalServiceClient
+from services.approval.models import ApprovedApprovalEntities
 from services.approval.models import CopyStatus
 from utils import get_resource_by_geid
 from utils import get_session_id
@@ -33,7 +33,6 @@ from utils import logger_info
 from utils import MetaDataFactory
 from utils import unlock_resource
 from utils import update_job
-
 
 PROCESS_PIPELINE = "data_transfer_folder"
 PIPELINE_DESC = '''
@@ -84,8 +83,8 @@ class CopyObjects:
         metadata_factory: MetaDataFactory,
         duplicated_files: Optional[DuplicatedFileNames] = None,
         destination_check: Optional[Neo4jPathCheck] = None,
-        approved_entities: Optional[ApprovedEntities] = None,
-        approval_entity_client: Optional[ApprovalEntityClient] = None,
+        approved_entities: Optional[ApprovedApprovalEntities] = None,
+        approval_service_client: Optional[ApprovalServiceClient] = None,
     ):
         self.mc = minio_client
         self.metadata_factory = metadata_factory
@@ -99,7 +98,7 @@ class CopyObjects:
         self.destination_check = destination_check
 
         self.approved_entities = approved_entities
-        self.approval_entity_client = approval_entity_client
+        self.approval_service_client = approval_service_client
 
         self.project = self.metadata_factory.project
         self.oper = self.metadata_factory.oper
@@ -151,7 +150,7 @@ class CopyObjects:
     def update_approval_entity_copy_status_for_node(self, node: Node, copy_status: CopyStatus) -> None:
         """Update copy status field for approval entity related to node."""
 
-        if not self.approval_entity_client:
+        if not self.approval_service_client:
             return
 
         if not self.approved_entities:
@@ -159,7 +158,7 @@ class CopyObjects:
 
         approval_entity = self.approved_entities[node.geid]
 
-        self.approval_entity_client.update_copy_status(approval_entity, copy_status)
+        self.approval_service_client.update_copy_status(approval_entity, copy_status)
 
     def copy_one_node(self, node: Node, current_root_path: str, parent_node: Node) -> None:
         # update here if the folder/file is archived then skip
@@ -183,8 +182,8 @@ class CopyObjects:
             attr = {x: node[x] for x in node if "attr" in x}
             tags = node.get("tags")
             extra = {
-                "system_tags": ["copied-to-core"], 
-                "parent_folder_geid": parent_node.get("global_entity_id")
+                "system_tags": ["copied-to-core"],
+                "parent_folder_geid": parent_node.get("global_entity_id"),
             }
 
             # create the copied node
@@ -217,10 +216,10 @@ class CopyObjects:
                 # first create the folder
                 tags = node.get("tags")
                 extra = {
-                    "system_tags": ["copied-to-core"], 
+                    "system_tags": ["copied-to-core"],
                     # "parent_folder_geid": parent_node.get("global_entity_id")
                 }
-                
+
                 new_node, _ = create_folder_node(
                     self.project.get("code"),
                     node,
@@ -252,7 +251,7 @@ def recursive_lock(
     project_code: str,
     nodes: NodeList,
     destination_path: str,
-    approved_entities: Optional[ApprovedEntities],
+    approved_entities: Optional[ApprovedApprovalEntities],
 ) -> DuplicatedFileNames:
     """The function will recursively lock the node tree."""
 
@@ -312,19 +311,28 @@ def recursive_lock(
 
 def copy_execute(
     dest_geid: str,
-    input_geid: str,
+    source_geid: str,
     project_code: str,
     operator: str,
     request_id: Optional[str],
     auth_token: Dict[str, Any],
 ) -> None:
-    source_node = get_resource_by_geid(input_geid)
+    approval_service_client = None
+    approved_entities = None
+
+    if request_id:
+        approval_service_client = ApprovalServiceClient()
+        request_approval_entities = approval_service_client.get_approval_entities(request_id)
+        source_geid = request_approval_entities.get_top_parent_geid(source_geid)
+        approved_entities = request_approval_entities.get_approved()
+
+    source_node = get_resource_by_geid(source_geid)
     dest_node = get_resource_by_geid(dest_geid)
 
     if dest_node.is_archived:
         raise ValueError('Destination is already in trash bin')
 
-    project_response = http_query_node('Container', {"code": project_code})
+    project_response = http_query_node('Container', {'code': project_code})
     project_info = project_response.json()[0]
 
     print(" - source node:", source_node)
@@ -333,13 +341,6 @@ def copy_execute(
     print()
     print(" - project node:", project_info)
     print("======")
-
-    approval_entity_client = None
-    approved_entities = None
-
-    if request_id:
-        approval_entity_client = ApprovalEntityClient()
-        approved_entities = approval_entity_client.get_approved_entities(request_id)
 
     locked_nodes = []
     try:
@@ -365,7 +366,7 @@ def copy_execute(
             duplicated_files,
             Neo4jPathCheck(target_zone),
             approved_entities,
-            approval_entity_client,
+            approval_service_client,
         )
         copy_object.recursive_copy(source_nodes, destination_path, Node(dest_node))
     finally:
@@ -425,7 +426,6 @@ def parse_inputs():
 
 
 def main():
-
     job_id = args['job_id']
     session_id = get_session_id(job_id)
 

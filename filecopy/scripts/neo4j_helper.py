@@ -4,6 +4,7 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 from typing import Tuple
+from typing import Union
 
 import requests
 from requests import Response
@@ -11,6 +12,9 @@ from requests import Response
 from config import ConfigClass
 from models import Node
 from models import ResourceType
+from services.approval.models import ApprovalEntity
+from services.approval.models import ApprovalEntityPath
+from utils import get_resource_by_geid
 
 
 def get_children_nodes(start_geid):
@@ -201,7 +205,7 @@ def archived_file_node(
 
 
 def create_folder_node(
-    dataset_code,
+    project_code,
     source_folder,
     operator,
     parent_node,
@@ -234,7 +238,7 @@ def create_folder_node(
         "folder_relative_path": relative_path,
         "display_path": relative_path + "/" + folder_name,
         "folder_level": parent_node.get("folder_level", -1) + 1,
-        "project_code": dataset_code,
+        "project_code": project_code,
         "tags": tags,
         "archived": False,
         "extra_labels": extra_labels,
@@ -318,7 +322,7 @@ class Neo4jPathCheck:
 
         return self._get_node(payload)
 
-    def get_folder(self, project_code: str, path: str) -> Optional[Node]:
+    def get_folder(self, project_code: str, path: Union[str, Path]) -> Optional[Node]:
         """Return folder that exists within project at specified path or None."""
 
         folder_path = Path(path)
@@ -343,3 +347,32 @@ class Neo4jPathCheck:
         }
 
         return self._get_node(payload)
+
+    def create_path(
+        self, project_code: str, approval_entity_path: ApprovalEntityPath, parent_folder_node: Node, operator: str
+    ) -> Node:
+        """Create all folders in a path (if they don't exist).
+
+        Starting from parent folder node and return last folder node in a path."""
+
+        path_to_create = ApprovalEntityPath(approval_entity_path)
+
+        current_folder_path = Path(parent_folder_node['display_path'])
+        while path_to_create:
+            current_folder_entity: ApprovalEntity = path_to_create.pop(0)
+            folder = self.get_folder(project_code, current_folder_path / current_folder_entity.name)
+            if not folder:
+                source_folder = get_resource_by_geid(current_folder_entity.entity_geid)
+                folder, _ = create_folder_node(
+                    project_code,
+                    source_folder,
+                    operator,
+                    parent_folder_node,
+                    str(current_folder_path),
+                    source_folder['tags'],
+                )
+
+            current_folder_path /= current_folder_entity.name
+            parent_folder_node = folder
+
+        return parent_folder_node

@@ -52,12 +52,12 @@ def parse_inputs() -> dict:
     return arguments
 
 
-def send_message(dataset_geid, bids_output, is_error=False) -> None:
+def send_message(dataset_geid, status, bids_output) -> None:
     queue_url = ConfigClass.QUEUE_SERVICE + "broker/pub"
     post_json = {
         "event_type": "BIDS_VALIDATE_NOTIFICATION",
         "payload": {
-            "status": "success",         # INIT/RUNNING/FINISH/ERROR
+            "status": status,         # INIT/RUNNING/FINISH/ERROR
             "dataset": dataset_geid,
             "payload": bids_output,
             "update_timestamp": time.time()
@@ -71,8 +71,7 @@ def send_message(dataset_geid, bids_output, is_error=False) -> None:
         }
     }
 
-    if is_error:
-        post_json["payload"]["status"] = "failed"
+    if status == "failed":
         post_json["payload"]["payload"] = None
         post_json["payload"]["error_msg"] = bids_output
 
@@ -154,34 +153,33 @@ def main():
     environment = args.get('environment', 'test')
     logger_info('environment: ' + str(args.get('environment')))
     logger_info('config set: ' + environment)
-
-    # connect to the postgres database
-    conn = psycopg2.connect(dbname=ConfigClass.POSTGREL_DB, user=ConfigClass.POSTGREL_USER,
-                            password=ConfigClass.POSTGREL_PWD, host=ConfigClass.POSTGREL_HOST)
-    cur = conn.cursor()
-
-    # get arguments
-    dataset_geid = args['dataset_geid']
-    refresh_token = args['refresh_token']
-    access_token = args['access_token']
-
-    logger_info('dataset_geid: {}, access_token: {}, refresh_token: {}'.format(
-        dataset_geid, access_token, refresh_token))
-
-    auth_token = {
-        "at": access_token,
-        "rt": refresh_token
-    }
-
-    locked_node = []
     try:
+        # connect to the postgres database
+        conn = psycopg2.connect(dbname=ConfigClass.POSTGREL_DB, user=ConfigClass.POSTGREL_USER,
+                                password=ConfigClass.POSTGREL_PWD, host=ConfigClass.POSTGREL_HOST)
+        cur = conn.cursor()
+
+        # get arguments
+        dataset_geid = args['dataset_geid']
+        refresh_token = args['refresh_token']
+        access_token = args['access_token']
+
+        logger_info('dataset_geid: {}, access_token: {}, refresh_token: {}'.format(
+            dataset_geid, access_token, refresh_token))
+
+        auth_token = {
+            "at": access_token,
+            "rt": refresh_token
+        }
+
+        locked_node = []
         files_locations = get_files_recursive(dataset_geid)
         # here add recursive read lock on the dataset
         locked_node, err = recursive_lock(dataset_geid)
         if err: raise err
 
         if len(files_locations) == 0:
-            send_message(dataset_geid, 'no files in dataset', True)
+            send_message(dataset_geid, "failed", 'no files in dataset')
             return
         download_from_minio(files_locations, auth_token)
         logger_info("files are downloaded from minio")
@@ -191,13 +189,7 @@ def main():
 
         logger_info('BIDS validation result: {}'.format(result))
 
-        try:
-            bids_output = json.loads(result)
-        except Exception as e:
-            logger_info(str(e))
-            send_message(dataset_geid, str(e), True)
-            time.sleep(60*60)
-            return
+        bids_output = json.loads(result)
 
         # remove bids folder after validate
         shutil.rmtree(TEMP_FOLDER)
@@ -214,6 +206,7 @@ def main():
 
         current_time = datetime.utcfromtimestamp(time.time())
 
+        logger_info(f"Validation time: {current_time}")
         # check whether the postgres database contains the record befor or not
         if not record:
             cur.execute(
@@ -239,10 +232,12 @@ def main():
         conn.commit()
         conn.close()
 
-        send_message(dataset_geid, bids_output)
+        send_message(dataset_geid, "success", bids_output)
 
     except Exception as e:
         logger_info(f"BIDs validator failed due to: {str(e)}")
+        send_message(dataset_geid, "failed", str(e))
+        # time.sleep(60*60)
         raise
     
     finally:

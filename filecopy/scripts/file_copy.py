@@ -12,8 +12,9 @@ from minio_client import Minio_Client_
 from models import append_suffix_to_filepath
 from models import get_timestamp
 from neo4j_helper import Neo4jPathCheck
-from services.approval.client import ApprovalEntityClient
+from services.approval.client import ApprovalServiceClient
 from services.approval.models import CopyStatus
+from utils import get_resource_by_geid
 from utils import get_session_id
 from utils import lock_resource
 from utils import logger_info
@@ -30,6 +31,7 @@ def main():
     output_bucket = f'core-{project_code}'
     input_path = args['input_path']
     input_bucket = f'gr-{project_code}'
+    operator = args['operator']
     job_id = args['job_id']
     session_id = get_session_id(job_id)
     request_id = args['request_id']
@@ -50,25 +52,66 @@ def main():
     if not input_node:
         raise ValueError(f'Input file "{input_path}" is not found in the database')
 
-    approval_entity_client = None
+    destination_check = Neo4jPathCheck('VRECore')
+    destination_folder = None
+
+    approval_service_client = None
     approval_entity = None
 
     if request_id:
-        approval_entity_client = ApprovalEntityClient()
-        approved_entities = approval_entity_client.get_approved_entities(request_id)
+        approval_service_client = ApprovalServiceClient()
+        approval_request = approval_service_client.get_approval_request(request_id)
+        approval_entities = approval_service_client.get_approval_entities(request_id)
+        approved_approval_entities = approval_entities.get_approved()
+
         try:
-            approval_entity = approved_entities[input_node.geid]
+            approval_entity = approved_approval_entities[input_node.geid]
         except KeyError:
             raise ValueError(
                 f'Input file "{input_path}" is not listed in approved entities for the request "{request_id}"'
             )
 
-    destination_filepath = f'{output_bucket}/{output_path}'
-    destination_check = Neo4jPathCheck('VRECore')
+        try:
+            approval_request_source = get_resource_by_geid(approval_request.source_geid)
+            assert approval_request_source.is_archived is False
+        except Exception:
+            raise ValueError(f'Source folder from approval request "{approval_request}" does no longer exist')
 
-    destination_folder = destination_check.get_folder(project_code, str(Path(output_path).parent))
-    if (not destination_folder) or destination_folder.is_archived:
-        raise ValueError('Destination folder does no longer exist or already in trash bin')
+        try:
+            approval_request_destination = get_resource_by_geid(approval_request.destination_geid)
+            assert approval_request_destination.is_archived is False
+            approval_request_destination_path = approval_request_destination['display_path']
+        except Exception:
+            raise ValueError(f'Destination folder from approval request "{approval_request}" does no longer exist')
+
+        approval_entity_path = approval_entities.get_path_until_top_parent(approval_entity)
+
+        output_path_parts = [approval_request_destination_path]
+        if approval_entity_path:
+            output_path_parts.append(str(approval_entity_path))
+        output_path_parts.append(approval_entity.name)
+
+        output_path = '/'.join(output_path_parts)
+
+        output_folder = str(Path(f'{output_bucket}/{output_path}').parent)
+        lock_resource(output_folder, 'write')
+        try:
+            destination_folder = destination_check.create_path(
+                project_code, approval_entity_path, approval_request_destination, operator
+            )
+        finally:
+            unlock_resource(output_folder, 'write')
+
+    destination_filepath = f'{output_bucket}/{output_path}'
+
+    if not destination_folder:
+        destination_folder = destination_check.get_folder(project_code, str(Path(output_path).parent))
+
+    if not destination_folder:
+        raise ValueError('Destination folder does no longer exist')
+
+    if destination_folder.is_archived:
+        raise ValueError('Destination folder already in trash bin')
 
     is_file_exists = destination_check.is_file_exists(project_code, destination_filepath)
 
@@ -84,15 +127,15 @@ def main():
     try:
         # copy minio object
         result = copy_object_single_file(output_bucket, output_path, input_bucket, input_path, minio_token)
-        if is_file_exists:
+        if is_file_exists or request_id:
             result['output_path'] = output_path
     finally:
         # unlock it after upload
         unlock_resource("%s/%s" % (input_bucket, input_path), "read")
         unlock_resource("%s/%s" % (output_bucket, output_path), "write")
 
-    if approval_entity_client and approval_entity:
-        approval_entity_client.update_copy_status(approval_entity, CopyStatus.COPIED)
+    if approval_service_client and approval_entity:
+        approval_service_client.update_copy_status(approval_entity, CopyStatus.COPIED)
 
     update_job(session_id, job_id, 'RUNNING', result)
 
