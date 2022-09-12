@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import requests
 import subprocess
 import json
@@ -8,6 +28,7 @@ from datetime import datetime
 from config import ConfigClass
 import traceback
 import shutil
+import os
 
 from minio_client import Minio_Client_
 from locks import recursive_lock, unlock_resource
@@ -149,15 +170,16 @@ def read_result_file() -> str:
 
 
 def main():
-    
+    logger_info('Vault url: ' + os.getenv("VAULT_URL"))
     environment = args.get('environment', 'test')
     logger_info('environment: ' + str(args.get('environment')))
     logger_info('config set: ' + environment)
     try:
         # connect to the postgres database
-        conn = psycopg2.connect(dbname=ConfigClass.POSTGREL_DB, user=ConfigClass.POSTGREL_USER,
-                                password=ConfigClass.POSTGREL_PWD, host=ConfigClass.POSTGREL_HOST)
+        conn = psycopg2.connect(dbname=ConfigClass.RDS_DBNAME, user=ConfigClass.RDS_USER,
+                                password=ConfigClass.RDS_PWD, host=ConfigClass.RDS_HOST)
         cur = conn.cursor()
+        table_name = ConfigClass.SQL_DB_NAME
 
         # get arguments
         dataset_geid = args['dataset_geid']
@@ -194,13 +216,16 @@ def main():
         # remove bids folder after validate
         shutil.rmtree(TEMP_FOLDER)
 
+        logger_info(f"Table name is: {table_name}")
+
         cur.execute(
             """
             SELECT *
-            FROM indoc_vre.bids_results b
+            FROM {}.bids_results b
+            """.format(table_name) +
+            """
             WHERE b.dataset_geid = %s;
-            """,
-            [dataset_geid, ]
+            """, [dataset_geid,]
         )
         record = cur.fetchone()
 
@@ -212,7 +237,9 @@ def main():
             cur.execute(
                 """
                 INSERT INTO
-                indoc_vre.bids_results(dataset_geid, created_time, updated_time, validate_output)
+                {}.bids_results(dataset_geid, created_time, updated_time, validate_output)
+                """.format(table_name) + 
+                """
                 VALUES (%s, %s, %s, %s);
                 """,
                 [dataset_geid, current_time,
@@ -221,7 +248,9 @@ def main():
         else:
             cur.execute(
                 """
-                UPDATE indoc_vre.bids_results
+                UPDATE {}.bids_results
+                """.format(table_name) +
+                """
                 SET validate_output = %s, updated_time = %s
                 WHERE dataset_geid = %s
                 ;

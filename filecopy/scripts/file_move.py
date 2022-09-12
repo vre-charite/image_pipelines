@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import argparse
 import os
 import re
@@ -40,7 +60,7 @@ def parse_inputs():
 
 
 def debug_message_sender(message: str):
-    url = ConfigClass.DATA_OPS_UT + "files/actions/message"
+    url = ConfigClass.DATA_OPS_UT_V1 + "files/actions/message"
     response = requests.post(url, json={
         "message": message,
         "channel": "pipelinewatch"
@@ -86,6 +106,7 @@ def location_decoder(location: str):
 
 
 def main():
+    logger_info('Vault url: ' + os.getenv("VAULT_URL"))
     environment = args.get('environment', 'test')
     logger_info('environment: ' + str(args.get('environment')))
     logger_info('config set: ' + environment)

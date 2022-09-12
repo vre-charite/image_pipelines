@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import argparse
 import time
 import traceback
@@ -52,7 +72,7 @@ def main():
     if not input_node:
         raise ValueError(f'Input file "{input_path}" is not found in the database')
 
-    destination_check = Neo4jPathCheck('VRECore')
+    destination_check = Neo4jPathCheck(ConfigClass.CORE_ZONE_LABEL)
     destination_folder = None
 
     approval_service_client = None
@@ -143,7 +163,7 @@ def main():
 
 
 def debug_message_sender(message: str):
-    url = ConfigClass.DATA_OPS_UT + "files/actions/message"
+    url = ConfigClass.DATA_OPS_UT_V1 + "files/actions/message"
     response = requests.post(url, json={
         "message": message,
         "channel": "pipelinewatch"

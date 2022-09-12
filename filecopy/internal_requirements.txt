@@ -18,17 +18,6 @@
 // permissions and limitations under the Licence.
 // 
 
-[tool.poetry]
-name = "image_pipelines"
-version = "0.1.0"
-description = ""
-authors = []
+--extra-index-url https://${PIP_USERNAME}:${PIP_PASSWORD}@git.indocresearch.org/api/v4/groups/pilot/-/packages/pypi/simple
+common==0.0.19
 
-[tool.poetry.dependencies]
-python = "~3.8.10"
-
-[tool.poetry.dev-dependencies]
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"

@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import argparse
 import os
 import traceback
@@ -94,7 +114,7 @@ class CopyObjects:
         self.duplicated_files = duplicated_files
 
         if destination_check is None:
-            destination_check = Neo4jPathCheck('VRECore')
+            destination_check = Neo4jPathCheck(ConfigClass.CORE_ZONE_LABEL)
         self.destination_check = destination_check
 
         self.approved_entities = approved_entities
@@ -109,7 +129,7 @@ class CopyObjects:
         for node in current_nodes:
             self.copy_one_node(node, current_root_path, parent_node)
 
-    def generate_file_metadata(self, node: Node, new_node: Node, new_node_version_id: str):
+    def create_file_metadata(self, node: Node, new_node: Node, new_node_version_id: str):
         source_geid = node.get("global_entity_id")
         target_geid = new_node.get("global_entity_id")
         # project_code = self.project.get("code")
@@ -127,8 +147,8 @@ class CopyObjects:
 
         # create the file stream/operational logs index in elastic search
         res_update_audit_logs = self.metadata_factory.update_file_operation_logs(
-            os.path.join('Greenroom', node.get("display_path", "")),
-            os.path.join('VRECore', new_node.get("display_path", "")),
+            os.path.join(ConfigClass.GR_ZONE_LABEL, node.get("display_path", "")),
+            os.path.join(ConfigClass.CORE_ZONE_LABEL, new_node.get("display_path", "")),
         )
         logger_info('res_update_audit_logs: ' + str(res_update_audit_logs.status_code))
 
@@ -200,7 +220,7 @@ class CopyObjects:
                 extra_fields=extra,
             )
 
-            self.generate_file_metadata(node, new_node, version_id)
+            self.create_file_metadata(node, new_node, version_id)
 
             self.update_approval_entity_copy_status_for_node(node, CopyStatus.COPIED)
 
@@ -261,7 +281,7 @@ def recursive_lock(
     # then it will affect the processing one.
 
     duplicated_files = DuplicatedFileNames()
-    destination_check = Neo4jPathCheck('VRECore')
+    destination_check = Neo4jPathCheck(ConfigClass.CORE_ZONE_LABEL)
 
     # TODO lock
 
@@ -355,7 +375,7 @@ def copy_execute(
         # if dont do so, the large folder will cause the initial token expire
         mc = Minio_Client_(auth_token['at'], auth_token['rt'])
 
-        target_zone = 'VRECore'
+        target_zone = ConfigClass.CORE_ZONE_LABEL
         metadata_factory = MetaDataFactory(
             project_info, operator, target_zone, PROCESS_PIPELINE, PIPELINE_DESC, OPERATION_TYPE
         )
@@ -377,7 +397,7 @@ def copy_execute(
 
 
 def copy_zippreview(old_geid, new_geid):
-    url = ConfigClass.DATA_OPS_GR + "archive"
+    url = ConfigClass.DATA_OPS_UT_V1 + "archive"
     get_params = {
         "file_geid": old_geid
     }
@@ -388,12 +408,11 @@ def copy_zippreview(old_geid, new_geid):
         raise Exception(response_get.text)
     json_response_get = response_get.json()
     archive_preview = json_response_get['result']
-    post_url = ConfigClass.DATA_OPS_GR + "archive"
     post_json = {
         "file_geid": new_geid,
         "archive_preview": archive_preview
     }
-    post_response = requests.post(url=post_url, json=post_json)
+    post_response = requests.post(url=url, json=post_json)
     if post_response.status_code != 200:
         raise Exception(post_response.text)
 
@@ -430,6 +449,7 @@ def main():
     session_id = get_session_id(job_id)
 
     try:
+        logger_info('Vault url: ' + os.getenv("VAULT_URL"))
         environment = args.get('environment', 'test')
         logger_info('environment: ' + str(args.get('environment')))
         logger_info('config set: ' + environment)
