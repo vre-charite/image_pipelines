@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import datetime
 import os
 from typing import Any
@@ -7,6 +27,8 @@ from typing import Optional
 import requests
 from requests import Response
 from zipfile import ZipFile
+
+from uvicorn import Config
 
 from config import ConfigClass
 
@@ -20,7 +42,7 @@ def http_query_node(primary_label, query_params=None):
     payload = {
         **query_params
     }
-    node_query_url = ConfigClass.NEO4J_SERVICE + "nodes/{}/query".format(primary_label)
+    node_query_url = ConfigClass.NEO4J_SERVICE_V1 + "nodes/{}/query".format(primary_label)
     response = requests.post(node_query_url, json=payload)
     return response
 
@@ -31,7 +53,7 @@ def get_resource_by_geid(geid):
     Raise exception if the geid is not exist.
     """
 
-    url = ConfigClass.NEO4J_SERVICE + "nodes/geid/%s" % geid
+    url = ConfigClass.NEO4J_SERVICE_V1 + "nodes/geid/%s" % geid
     res = requests.get(url)
     nodes = res.json()
 
@@ -43,7 +65,7 @@ def get_resource_by_geid(geid):
 
 def http_update_node(primary_label, neo4j_id, update_json):
     # update neo4j node
-    update_url = ConfigClass.NEO4J_SERVICE + "nodes/{}/node/{}".format(primary_label, neo4j_id)
+    update_url = ConfigClass.NEO4J_SERVICE_V1 + "nodes/{}/node/{}".format(primary_label, neo4j_id)
     res = requests.put(url=update_url, json=update_json)
     print(update_json)
     print(res.json())
@@ -57,7 +79,7 @@ class MetaDataFactory:
         self.project = project
         self.oper = operator
         self.zone = zone
-        self.zone_label = {"greenroom": "Greenroom", "vrecore": "VRECore"}.get(zone)
+        self.zone_label = {"greenroom": ConfigClass.GR_ZONE_LABEL, "core": ConfigClass.CORE_ZONE_LABEL}.get(zone)
 
         self.pipeline_name = pipeline_name
         self.pipeline_desc = pipeline_desc
@@ -152,7 +174,7 @@ class MetaDataFactory:
             "file_name": new_node.get("name"),
             "guid": guid,
             "atlas_guid": guid,
-            "generate_id": src_node.get("generate_id", None),
+            "dcm_id": src_node.get("dcm_id", None),
             "zone": self.zone,
             "operator": src_node.get("uploader", None),
             "uploader": src_node.get("uploader", None),
@@ -163,8 +185,6 @@ class MetaDataFactory:
         # TODO create new api for this
         if "manifest_id" in new_node:
             manifest_id = new_node['manifest_id']
-            full_path = new_node['full_path']
-
             attributes = []
             res = requests.get(
                 ConfigClass.ENTITY_INFO_SERVICE + f"manifest/{manifest_id}")
@@ -206,7 +226,7 @@ class MetaDataFactory:
         payload.update({"uploader": self.oper})
         payload.update({"file_name": payload.get("name")})
         payload.update({"path": payload.get("location")})
-        payload.update({"namespace": "vrecore"})
+        payload.update({"namespace": ConfigClass.CORE_ZONE_LABEL.lower()})
 
         res = requests.post(url=ConfigClass.CATALOGUING_SERVICE_V2 + 'filedata', json=payload)
 
@@ -230,8 +250,7 @@ def update_job(
     if add_payload is None:
         add_payload = {}
 
-    _config = config_singleton()
-    url = _config.DATA_OPS_UT + 'tasks'
+    url = ConfigClass.DATA_OPS_UT_V1 + 'tasks'
     response = requests.put(url, json={
         'session_id': session_id,
         'job_id': job_id,
@@ -243,7 +262,7 @@ def update_job(
 
 
 def get_job(job_id):
-    url = ConfigClass.DATA_OPS_UT + "tasks"
+    url = ConfigClass.DATA_OPS_UT_V1 + "tasks"
     task_response = requests.get(
         url,
         params={
@@ -295,6 +314,6 @@ def save_preview(zip_preview, file_geid):
             "archive_preview": zip_preview,
             "file_geid": file_geid,
         }
-        response = requests.post(ConfigClass.DATA_OPS_GR + "archive", json=payload)
+        response = requests.post(ConfigClass.DATA_OPS_UT_V1 + "archive", json=payload)
     except Exception as e:
         raise e

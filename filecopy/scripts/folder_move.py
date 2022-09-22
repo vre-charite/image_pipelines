@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import argparse
 import os
 import traceback
@@ -42,8 +62,6 @@ class DeleteObjects:
         for ff_object in currenct_nodes:
             ff_geid = ff_object.get("global_entity_id")
             # TODO update here
-            # zone, zone_label = ("greenroom", "Greenroom") if "Greenroom" in ff_object.get("labels") \
-            # else ("vrecore", "VRECore")
 
             # update here if the folder/file is archieved then skip
             if ff_object.get("archived", False):
@@ -150,7 +168,7 @@ class DeleteObjects:
 def recursive_lock(code, nodes, zone):
     """Function will recursively lock the node tree."""
 
-    bucket_prefix = "gr-" if zone == "greenroom" else "core-"
+    bucket_prefix = "gr-" if zone == ConfigClass.GR_ZONE_LABEL else "core-"
     # this is for crash recovery, if something trigger the exception
     # we will unlock the locked node only. NOT the whole tree. The example
     # case will be copy the same node, if we unlock the whole tree in exception
@@ -204,7 +222,7 @@ def delete_execute(job_id, input_geid, project_code, operator, auth_token: dict)
 
     locked_node = []
     try:
-        zone = "greenroom" if "Greenroom" in source_node.get("labels") else "vrecore"
+        zone = ConfigClass.GR_ZONE_LABEL if  ConfigClass.GR_ZONE_LABEL in source_node.get("labels") else ConfigClass.CORE_ZONE_LABEL
         # at begining lock the whole node tree
         locked_node, err = recursive_lock(project_info.get("code"), [source_node], zone)
         if err:
@@ -261,6 +279,7 @@ def main():
     try:
         # fecthing all the varibale/parameter from the script args
         environment = args.get('environment', 'test')
+        logger_info('Vault url: ' + os.getenv("VAULT_URL"))
 
         job_id = args['job_id']
         input_geid = args['input_geid']

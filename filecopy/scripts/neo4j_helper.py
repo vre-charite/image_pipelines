@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 import time
 from pathlib import Path
 from typing import Any
@@ -25,7 +45,7 @@ def get_children_nodes(start_geid):
         "start_params": {"global_entity_id":start_geid},
     }
 
-    node_query_url = ConfigClass.NEO4J_SERVICE + "relations/query"
+    node_query_url = ConfigClass.NEO4J_SERVICE_V1 + "relations/query"
     response = requests.post(node_query_url, json=payload)
     ffs = [x.get("end_node") for x in response.json()]
 
@@ -52,7 +72,7 @@ def create_file_node(
         attribute = {}
 
     if extra_labels is None:
-        extra_labels = ['VRECore']
+        extra_labels = [ConfigClass.CORE_ZONE_LABEL]
 
     if extra_fields is None:
         extra_fields = {}
@@ -60,7 +80,7 @@ def create_file_node(
     # fecth the geid from common service
     geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
     file_name = new_name if new_name else source_file.get("name")
-    # generate minio object path
+    # format minio object path
     fuf_path = relative_path+"/"+file_name
 
     minio_http = ("https://" if ConfigClass.MINIO_HTTPS else "http://") + ConfigClass.MINIO_ENDPOINT
@@ -80,7 +100,7 @@ def create_file_node(
         "display_path": fuf_path,
         "archived": False,
         "list_priority": 20,
-        "generate_id": source_file.get("generate_id", None),
+        "dcm_id": source_file.get("dcm_id", None),
         **extra_fields
     }
 
@@ -148,7 +168,7 @@ def archived_file_node(
         attribute = {}
 
     if extra_labels is None:
-        extra_labels = ['VRECore']
+        extra_labels = [ConfigClass.CORE_ZONE_LABEL]
 
     if extra_fields is None:
         extra_fields = {}
@@ -156,7 +176,7 @@ def archived_file_node(
     # fecth the geid from common service
     geid = requests.get(ConfigClass.COMMON_SERVICE+"utility/id").json().get("result")
     file_name = new_name if new_name else source_file.get("name")
-    # generate minio object path
+    # format minio object path
     fuf_path = relative_path+"/"+file_name
 
     minio_http = ("https://" if ConfigClass.MINIO_HTTPS else "http://") + ConfigClass.MINIO_ENDPOINT
@@ -219,7 +239,7 @@ def create_folder_node(
         tags = []
 
     if extra_labels is None:
-        extra_labels = ['VRECore']
+        extra_labels = [ConfigClass.CORE_ZONE_LABEL]
 
     if extra_fields is None:
         extra_fields = {}
@@ -259,13 +279,13 @@ def create_node_with_parent(node_label, node_property, parent_id) -> Tuple[Node,
     # - size: file size in byte (if it is a folder then size will be -1)
     # - create_time: neo4j timeobject (API will create but not passed in api)
     # - location: indicate the minio location as minio://http://<domain>/object
-    create_node_url = ConfigClass.NEO4J_SERVICE + 'nodes/' + node_label
+    create_node_url = ConfigClass.NEO4J_SERVICE_V1 + 'nodes/' + node_label
     response = requests.post(create_node_url, json=node_property)
     new_node = response.json()[0]
 
     # now create the relationship
     # the parent can be two possible: 1.dataset 2.folder under it
-    create_node_url = ConfigClass.NEO4J_SERVICE + 'relations/own'
+    create_node_url = ConfigClass.NEO4J_SERVICE_V1 + 'relations/own'
     new_relation = requests.post(create_node_url, json={"start_id": parent_id, "end_id": new_node.get("id")})
 
     return Node(new_node), new_relation

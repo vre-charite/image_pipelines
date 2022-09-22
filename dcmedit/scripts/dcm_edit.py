@@ -1,3 +1,23 @@
+# Copyright 2022 Indoc Research
+# 
+# Licensed under the EUPL, Version 1.2 or – as soon they
+# will be approved by the European Commission - subsequent
+# versions of the EUPL (the "Licence");
+# You may not use this work except in compliance with the
+# Licence.
+# You may obtain a copy of the Licence at:
+# 
+# https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+# 
+# Unless required by applicable law or agreed to in
+# writing, software distributed under the Licence is
+# distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied.
+# See the Licence for the specific language governing
+# permissions and limitations under the Licence.
+# 
+
 '''
 Tool to mask/remove dicom files
 
@@ -30,9 +50,9 @@ from neo4j_helper import create_file_node, create_relation
 
 PROCESS_PIPELINE = "dicom_edit"
 PIPELINE_DESC = '''
-    the script will generate the output from dicom zip
+    the script will produce the output from dicom zip
 '''
-OPERATION_TYPE = "generate_pipeline"
+OPERATION_TYPE = f"{ConfigClass.DCM_PROJECT}_pipeline"
 
 
 def parse_inputs():
@@ -84,7 +104,6 @@ def run_command(command):
 
 
 def parse_location(path, env):
-    # parse from format minio://http://10.3.7.220/gr-generate/admin/generate_folder/ABC-1234_OIP.WH4UEecUNFLkLRAy3cbgQQHaEK.jpg
     protocol = "https://" if ConfigClass.MINIO_HTTPS else "http://"
     path = path.replace("minio://", "").replace(protocol, "").split("/")
     bucket = path[1]
@@ -92,19 +111,18 @@ def parse_location(path, env):
     return {"bucket": bucket, "path": path}
 
 
-def download_file(minio_path, target_folder, env, auth_token):
+def download_file(minio_path, target_folder, env, mc: Minio_Client_):
     file_data = parse_location(minio_path, env)
     # for lock, since I know the dicom is zip so I will just lock the zip
     resource_key = "%s/%s"%(file_data.get("bucket"), file_data.get("path"))
     lock_resource(resource_key, "read")
+    download_from_minio = datetime.datetime.now()
+    LOGGER.info(f'Time after minio download: {download_from_minio}')
 
     target_path = None
     try:
-        mc = Minio_Client_(env, auth_token["at"], auth_token["rt"])
-        response = mc.client.get_object(file_data["bucket"], file_data["path"])
         target_path = target_folder + "/" + file_data["path"].split("/")[-1]
-        with open(target_path, 'wb') as f:
-            f.write(response.data)
+        mc.client.fget_object(file_data["bucket"], file_data["path"], target_path)
     except Exception as e:
         raise e
     finally:
@@ -114,12 +132,10 @@ def download_file(minio_path, target_folder, env, auth_token):
     return target_path
 
 
-def upload_file(file_path, target_location, env, auth_token):
+def upload_file(file_path, target_location, env, mc: Minio_Client_):
     file_data = parse_location(target_location, env)
     
-    response = None
     try:
-        mc = Minio_Client_(env, auth_token["at"], auth_token["rt"])
         mc.client.fput_object(
             file_data["bucket"], 
             file_data["path"], 
@@ -136,22 +152,21 @@ def upload_file(file_path, target_location, env, auth_token):
     return object_info
 
 
-def generate_output_location(input_file):
+def format_output_location(input_file):
     filename = os.path.basename(input_file)
     output_filename = filename.split(".")[0] + "_edited_"+str(int(time.time()))+".zip"
     return input_file.replace(filename, output_filename)
     
 
 def main(env):   
-    print(conf.get('projects', 'IDs'))
-    projects = [p.strip() for p in conf.get('projects', 'IDs').split(',')]
+    projects = [ConfigClass.DCM_PROJECT]
     if args['project'] not in projects and not args['anonymize_script']:
         raise ValueError(f"unknown project {args['project']}")
     t = datetime.datetime.now().strftime('%H%M%S') 
     t = os.path.basename(args['input_file']).split('.')[0] + t
     ext_dir = args['ext_dir'] = os.path.join(args['workdir'], t+'i')
     out_dir = os.path.join(args['workdir'], t+'o')
-    output_location = generate_output_location(args["input_file"])
+    output_location = format_output_location(args["input_file"])
     file_data = parse_location(output_location, env)
     resource_key = "%s/%s"%(file_data.get("bucket"), file_data.get("path"))
 
@@ -167,15 +182,29 @@ def main(env):
         os.makedirs(out_dir)
         LOGGER.info(f'work dir: {out_dir}')
 
-        downloaded_file = download_file(args["input_file"], ext_dir, env, token)
+        # initialize the minio outside to keep one instance of credential
+        # if dont do so, the dcmedit will cause the initial token expire
+        mc = Minio_Client_(env, token['at'], token['rt'])
+
+        download_zip_time = datetime.datetime.now()
+        LOGGER.info(f'Start time of downloading the zip command time: {download_zip_time}')
+        downloaded_file = download_file(args["input_file"], ext_dir, env, mc)
+        after_download_zip_time = datetime.datetime.now()
+        LOGGER.info(f'End time of downloading the zip command time: {after_download_zip_time}')
+
         print(downloaded_file)
 
-        if args['project'] == 'generate':
-            preprocess.generate(args)
+        if args['project'] == ConfigClass.DCM_PROJECT:
+            preprocess.dcm_pipeline(args)
+        
+        start = datetime.datetime.now()
+        LOGGER.info(f'Start time of the extraction: {start}')
         extract(downloaded_file, ext_dir)
         edit = ['java', '-jar', 'dicom-edit6-1.0.8-SNAPSHOT-jar-with-dependencies.jar', '-s',
                 args['anonymize_script'], '-i', ext_dir, '-o', out_dir]
         
+        run_command_time = datetime.datetime.now()
+        LOGGER.info(f'Start time of running dcmedit command time: {run_command_time}')
         run_command(edit)
         fdcms = glob.glob(out_dir+"/**", recursive=True)
         fdcms = [f for f in fdcms if os.path.isfile(f)]
@@ -192,7 +221,10 @@ def main(env):
         os.chdir(args['workdir'])
         shutil.make_archive(f_out, 'zip', args['workdir'], t+'o')
         f_out += '.zip'
-        new_file_obj = upload_file(f_out, output_location, env, token)
+
+        upload_zip_time = datetime.datetime.now()
+        LOGGER.info(f'Start time of uploading zip command time: {upload_zip_time}')
+        new_file_obj = upload_file(f_out, output_location, env, mc)
         LOGGER.info(f'output: {f_out}')
 
         #####################################################
@@ -208,7 +240,7 @@ def main(env):
                 }
             }
             response = requests.post(
-                ConfigClass.NEO4J_SERVICE + "relations/query", json=payload)
+                ConfigClass.NEO4J_SERVICE_V1 + "relations/query", json=payload)
             if response.json():
                 parent_folder = response.json(
                 )[0]["start_node"]
@@ -223,7 +255,7 @@ def main(env):
             payload = {
                 "location": args["input_file"]
             }
-            response = requests.post(ConfigClass.NEO4J_SERVICE + "nodes/File/query", json=payload)
+            response = requests.post(ConfigClass.NEO4J_SERVICE_V1 + "nodes/File/query", json=payload)
             input_node = response.json()[0]
             LOGGER.debug(f'Got parent node {input_node}')
         except Exception as e:
@@ -258,7 +290,7 @@ def main(env):
         # es?
         mf.create_es_search_index(new_node, input_node, "File", guid)
 
-        # generate zip preview
+        # create zip preview
         preview = parse_zip(f_out)
         save_preview(preview, new_node.get("global_entity_id"))
 
@@ -281,10 +313,9 @@ if __name__ == "__main__":
     log_path = os.path.dirname(logname)
     if log_path and not os.path.exists(log_path):
         os.makedirs(log_path)
-    conf = configparser.ConfigParser()
-    conf.read('config.ini')
     try:
         LOGGER = Logger(logname, True).logger
+        LOGGER.info('Vault url: ' + os.getenv("VAULT_URL"))
         LOGGER.info("="*82)
         LOGGER.info(" Start dicom editing ...  ".center(82, '='))
         LOGGER.info("="*82)
