@@ -2,9 +2,9 @@ image: docker:latest
 
 variables:
   REGISTRY: registry.bihealth.org
-  DCMEDIT_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipeline/dcmedit:v0.1
-  FILECOPY_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipeline/filecopy:v0.1
-  BIDS_VALIDATOR_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipeline/bids-validator:v0.1
+  DCMEDIT_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipelines/dcmedit:v0.1
+  FILECOPY_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipelines/filecopy:v0.1
+  BIDS_VALIDATOR_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipelines/bids-validator:v0.1
 
 
 build-dcmedit:

@@ -37,4 +37,3 @@ RUN PIP_USERNAME=$pip_username PIP_PASSWORD=$pip_password pip3 install -r /dcm/s
 RUN chmod 555 -R /dcm
 
 WORKDIR /dcm
-
