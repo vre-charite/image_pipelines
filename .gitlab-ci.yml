@@ -1,10 +1,10 @@
 image: docker:latest
 
 variables:
-  REGISTRY: s-hdp-vre-v007.charite.de
-  DCMEDIT_CONTAINER_IMAGE: ${REGISTRY}/dcmedit:v0.1
-  FILECOPY_CONTAINER_IMAGE: ${REGISTRY}/filecopy:v0.1
-  BIDS_VALIDATOR_CONTAINER_IMAGE: ${REGISTRY}/bids-validator:v0.1
+  REGISTRY: registry.bihealth.org
+  DCMEDIT_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipeline/dcmedit:v0.1
+  FILECOPY_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipeline/filecopy:v0.1
+  BIDS_VALIDATOR_CONTAINER_IMAGE: ${REGISTRY}/vre/image_pipeline/bids-validator:v0.1
 
 
 build-dcmedit:
@@ -16,7 +16,7 @@ build-dcmedit:
       - dcmedit/*
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${DCMEDIT_CONTAINER_IMAGE} dcmedit/.
+    - docker build --build-arg pip_username=${DOCKER_USERNAME} --build-arg pip_password=${DOCKER_PASSWORD} --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${DCMEDIT_CONTAINER_IMAGE} dcmedit/.
     - docker push ${DCMEDIT_CONTAINER_IMAGE}
 
 build-filecopy:
@@ -29,7 +29,7 @@ build-filecopy:
       - filecopy/scripts/*
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${FILECOPY_CONTAINER_IMAGE} filecopy/.
+    - docker build --build-arg pip_username=${DOCKER_USERNAME} --build-arg pip_password=${DOCKER_PASSWORD} --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${FILECOPY_CONTAINER_IMAGE} filecopy/.
     - docker push ${FILECOPY_CONTAINER_IMAGE}
 
 
@@ -43,5 +43,5 @@ build-bids-validator:
       - bids-validator/scripts/*
   script:
     - docker login ${REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASSWORD}
-    - docker build --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${BIDS_VALIDATOR_CONTAINER_IMAGE} bids-validator/.
+    - docker build --build-arg pip_username=${DOCKER_USERNAME} --build-arg pip_password=${DOCKER_PASSWORD} --build-arg http_proxy=http://proxy.charite.de:8080/ --build-arg https_proxy=http://proxy.charite.de:8080/ -t ${BIDS_VALIDATOR_CONTAINER_IMAGE} bids-validator/.
     - docker push ${BIDS_VALIDATOR_CONTAINER_IMAGE}
